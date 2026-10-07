@@ -1,0 +1,54 @@
+[proxy]
+bind = "127.0.0.1"
+port = 1080
+
+[websocket]
+templates = [
+  "wss://kws{dc}.web.telegram.org/apiws",
+  "wss://kws{dc}-1.web.telegram.org/apiws",
+  "wss://{dc_name}.web.telegram.org/apiws"
+]
+path = "/apiws"
+pool_size = 1
+
+[timeouts]
+socks_handshake_ms = 700
+connect_ms = 4500
+idle_ms = 90000
+reconnect_ms = 800
+udp_idle_ms = 90000
+
+[tun]
+enabled = true
+adapter_name = "TeleRoute"
+address = "10.250.0.1"
+mtu = 1280
+telegram_udp_cidrs = ["149.154.0.0/16", "91.108.0.0/16", "5.28.192.0/18", "95.161.64.0/20"]
+extra_udp_cidrs = []
+route_metric = 1
+
+[relay]
+enabled = false
+endpoint = "quic://relay.example.com:4433"
+server_name = "relay.example.com"
+auth_token = "change-me"
+
+[routing]
+mode = "full"
+route_all_traffic = false
+telegram_only = true
+prefer_wss = true
+direct_udp_fallback = true
+relay_udp_fallback = true
+
+[logging]
+level = "info"
+max_file_mb = 8
+keep_files = 5
+
+autostart.start_with_windows = false
+autostart.start_connected = false
+autostart.start_minimized = false
+autostart.minimize_to_tray = true
+
+log_diagnostics = true
