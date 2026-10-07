@@ -10,7 +10,13 @@ async fn socks5_handles_120_simultaneous_connections() -> anyhow::Result<()> {
     tokio::spawn(async move {
         loop {
             let Ok((mut s, _)) = echo.accept().await else { break; };
-            tokio::spawn(async move { let mut buf=[0u8;128]; while let Ok(n)=s.read(&mut buf).await { if n==0 {break;} if s.write_all(&buf[..n]).await.is_err(){break;} } });
+            tokio::spawn(async move {
+                let mut buf = [0u8; 128];
+                while let Ok(n) = s.read(&mut buf).await {
+                    if n == 0 { break; }
+                    if s.write_all(&buf[..n]).await.is_err() { break; }
+                }
+            });
         }
     });
 
@@ -22,7 +28,13 @@ async fn socks5_handles_120_simultaneous_connections() -> anyhow::Result<()> {
     let listener = server.bind().await?;
     let proxy_addr = listener.local_addr()?;
     let shutdown = CancellationToken::new();
-    let task = tokio::spawn(server.run_on_listener(listener, shutdown.clone()));
+
+    // Move the server into the spawned future so the borrow created by
+    // run_on_listener(&self, ...) is owned by that future instead of the test stack frame.
+    let server_shutdown = shutdown.clone();
+    let server_task = tokio::spawn(async move {
+        server.run_on_listener(listener, server_shutdown).await
+    });
 
     let mut clients = Vec::new();
     for i in 0..120u16 {
@@ -30,21 +42,35 @@ async fn socks5_handles_120_simultaneous_connections() -> anyhow::Result<()> {
         let target = echo_addr;
         clients.push(tokio::spawn(async move {
             let mut s = TcpStream::connect(addr).await?;
-            s.write_all(&[5,1,0]).await?;
-            let mut r=[0u8;2]; s.read_exact(&mut r).await?;
-            if r != [5,0] { anyhow::bail!("bad SOCKS greeting: {:?}",r); }
-            let ip = match target.ip() { std::net::IpAddr::V4(v)=>v.octets(), _=>unreachable!() };
-            let mut req=vec![5,1,0,1]; req.extend_from_slice(&ip); req.extend_from_slice(&target.port().to_be_bytes());
+            s.write_all(&[5, 1, 0]).await?;
+            let mut r = [0u8; 2];
+            s.read_exact(&mut r).await?;
+            if r != [5, 0] { anyhow::bail!("bad SOCKS greeting: {:?}", r); }
+            let ip = match target.ip() {
+                std::net::IpAddr::V4(v) => v.octets(),
+                _ => unreachable!(),
+            };
+            let mut req = vec![5, 1, 0, 1];
+            req.extend_from_slice(&ip);
+            req.extend_from_slice(&target.port().to_be_bytes());
             s.write_all(&req).await?;
-            let mut resp=[0u8;10]; s.read_exact(&mut resp).await?;
-            if resp[1]!=0 { anyhow::bail!("SOCKS connect failed: {}",resp[1]); }
-            let msg=format!("load-{i}"); s.write_all(msg.as_bytes()).await?;
-            let mut got=vec![0u8;msg.len()]; s.read_exact(&mut got).await?;
+            let mut resp = [0u8; 10];
+            s.read_exact(&mut resp).await?;
+            if resp[1] != 0 { anyhow::bail!("SOCKS connect failed: {}", resp[1]); }
+            let msg = format!("load-{i}");
+            s.write_all(msg.as_bytes()).await?;
+            let mut got = vec![0u8; msg.len()];
+            s.read_exact(&mut got).await?;
             if got != msg.as_bytes() { anyhow::bail!("echo mismatch"); }
-            Ok::<(),anyhow::Error>(())
+            Ok::<(), anyhow::Error>(())
         }));
     }
-    for task in clients { timeout(Duration::from_secs(10), task).await??; }
-    shutdown.cancel(); let _ = timeout(Duration::from_secs(2), task).await;
+
+    for client in clients {
+        timeout(Duration::from_secs(10), client).await??;
+    }
+
+    shutdown.cancel();
+    let _ = timeout(Duration::from_secs(2), server_task).await;
     Ok(())
 }
