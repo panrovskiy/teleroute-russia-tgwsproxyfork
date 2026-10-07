@@ -82,6 +82,17 @@ impl AppContext {
                 }
             };
 
+            // Telegram Desktop does not automatically discover TeleRoute's local
+            // SOCKS5 listener. Tell it explicitly through the supported tg://socks
+            // deep link as soon as the listener is ready.
+            #[cfg(windows)]
+            if let Err(e) = crate::platform::windows::open_telegram_socks_proxy(
+                &config.proxy.bind,
+                config.proxy.port,
+            ) {
+                tracing::warn!(error = %e, "failed to open Telegram SOCKS5 setup link");
+            }
+
             telemetry.write().tun = if matches!(config.routing.mode, Mode::Proxy) || !config.tun.enabled { "INACTIVE".into() } else { "STARTING".into() };
 
             if config.routing.mode != Mode::Proxy && config.tun.enabled {
