@@ -1,0 +1,60 @@
+name: Windows Build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          target: x86_64-pc-windows-msvc
+      - name: Download and verify official Wintun 0.14.1
+        shell: pwsh
+        run: |
+          $url = "https://www.wintun.net/builds/wintun-0.14.1.zip"
+          $zip = Join-Path $env:RUNNER_TEMP "wintun-0.14.1.zip"
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          $extract = Join-Path $env:RUNNER_TEMP "wintun"
+          Remove-Item $extract -Recurse -Force -ErrorAction SilentlyContinue
+          Expand-Archive -Path $zip -DestinationPath $extract -Force
+          New-Item -ItemType Directory -Force -Path "wintun" | Out-Null
+          Copy-Item "$extract/wintun/bin/amd64/wintun.dll" "wintun/wintun.dll" -Force
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Build release
+        run: cargo build --release --target x86_64-pc-windows-msvc
+      - name: Run tests
+        run: cargo test --release --target x86_64-pc-windows-msvc
+      - name: Package portable TeleRoute
+        shell: pwsh
+        run: |
+          $release = "TeleRoute-Windows-x64"
+          Remove-Item $release -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $release | Out-Null
+          Copy-Item "target/x86_64-pc-windows-msvc/release/tele-route.exe" "$release/TeleRoute.exe"
+          Copy-Item "README.md" "$release/README.md"
+          Copy-Item "BUILD.md" "$release/BUILD.md"
+          Copy-Item "LICENSE" "$release/LICENSE"
+          Copy-Item "config.example.toml" "$release/config.example.toml"
+          Compress-Archive -Path "$release/*" -DestinationPath "TeleRoute-Windows-x64.zip" -Force
+          $hash = (Get-FileHash "TeleRoute-Windows-x64.zip" -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  TeleRoute-Windows-x64.zip" | Set-Content "TeleRoute-Windows-x64.sha256"
+      - name: Upload TeleRoute artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TeleRoute-Windows-x64
+          path: |
+            TeleRoute-Windows-x64.zip
+            TeleRoute-Windows-x64.sha256
+          if-no-files-found: error
