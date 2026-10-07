@@ -107,7 +107,7 @@ impl eframe::App for TeleRouteApp {
         });
 
         if !narrow {
-            egui::Panel::left("nav").min_size([178.0, 0.0].into()).show(ui, |ui| {
+            egui::Panel::left("nav").min_size(178.0).show(ui, |ui| {
                 self.navigation(ui, false);
             });
         } else {
