@@ -33,14 +33,46 @@ impl AppContext {
 
     pub fn connect(&self) {
         if matches!(self.telemetry.read().status, ConnectionStatus::Connected | ConnectionStatus::Connecting) { return; }
+
+        let config = self.config.read().clone();
+
+        #[cfg(windows)]
+        if config.routing.mode != Mode::Proxy && config.tun.enabled && !crate::platform::windows::is_elevated() {
+            {
+                let mut t = self.telemetry.write();
+                t.status = ConnectionStatus::Connecting;
+                t.tun = "ELEVATION REQUIRED".into();
+                t.udp = "WAITING".into();
+                t.calls = "WAITING".into();
+                t.error.clear();
+            }
+
+            match crate::platform::windows::relaunch_as_admin_and_connect() {
+                Ok(()) => {
+                    // The elevated instance takes over. Do not continue starting
+                    // a second non-elevated TUN session in this process.
+                    std::process::exit(0);
+                }
+                Err(e) => {
+                    let mut t = self.telemetry.write();
+                    t.status = ConnectionStatus::Error;
+                    t.tun = "FAILED".into();
+                    t.udp = "UNAVAILABLE".into();
+                    t.calls = "UNAVAILABLE".into();
+                    t.error = format!("Administrator permission is required for Calls/Full mode: {e}");
+                    return;
+                }
+            }
+        }
+
         self.telemetry.write().status = ConnectionStatus::Connecting;
         self.telemetry.write().error.clear();
-        let config = self.config.read().clone();
         let stats = self.stats.clone();
         let telemetry = self.telemetry.clone();
         let token = CancellationToken::new();
         *self.shutdown.write() = Some(token.clone());
         let shutdown_for_tasks = token.clone();
+
         self.runtime.spawn(async move {
             let proxy = Socks5Server::new(config.clone(), stats.clone());
             let listener = match proxy.bind().await {
@@ -49,9 +81,12 @@ impl AppContext {
                     let mut t = telemetry.write(); t.status = ConnectionStatus::Error; t.error = format!("SOCKS5 bind failed: {e}"); return;
                 }
             };
+
             telemetry.write().tun = if matches!(config.routing.mode, Mode::Proxy) || !config.tun.enabled { "INACTIVE".into() } else { "STARTING".into() };
+
             if config.routing.mode != Mode::Proxy && config.tun.enabled {
-                #[cfg(windows)] {
+                #[cfg(windows)]
+                {
                     match crate::tun::TunManager::start(&config, stats.clone()).await {
                         Ok(tun) => {
                             telemetry.write().tun = "ACTIVE".into();
@@ -74,10 +109,12 @@ impl AppContext {
                     telemetry.write().calls = "UNAVAILABLE".into();
                 }
             }
+
             proxy.warmup_wss_pool().await;
             telemetry.write().status = ConnectionStatus::Connected;
             telemetry.write().transport = if config.routing.prefer_wss { "WebSocket / fallback TCP".into() } else { "TCP".into() };
             telemetry.write().dc = "automatic".into();
+
             if let Err(e) = proxy.run_on_listener(listener, token.clone()).await {
                 telemetry.write().status = ConnectionStatus::Error;
                 telemetry.write().error = format!("Core stopped: {e}");
@@ -113,7 +150,14 @@ pub fn run() -> anyhow::Result<()> {
     logging::init(&config)?;
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().thread_name("tele-route").build()?;
     let ctx = AppContext::new(config.clone(), runtime);
-    let autostart = std::env::args().any(|a| a == "--autostart");
-    if autostart && config.autostart.start_connected { ctx.connect(); }
+
+    let args: Vec<String> = std::env::args().collect();
+    let autostart = args.iter().any(|a| a == "--autostart");
+    let elevated_connect = args.iter().any(|a| a == "--elevated-connect");
+
+    if (autostart && config.autostart.start_connected) || elevated_connect {
+        ctx.connect();
+    }
+
     crate::gui::run(ctx, autostart && config.autostart.start_minimized)
 }
