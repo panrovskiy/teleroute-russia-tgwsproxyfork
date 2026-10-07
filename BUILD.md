@@ -50,3 +50,7 @@ release/
 ```
 
 `wintun.dll` should come from the official Wintun distribution; do not replace it with an arbitrary DLL.
+
+### Standalone Windows build
+
+The Windows release workflow embeds the official Wintun DLL into the executable. The generated Rust source uses `env!("OUT_DIR")` rather than an absolute Windows path, so paths containing backslashes are handled safely.

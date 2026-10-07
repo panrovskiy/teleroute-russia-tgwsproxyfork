@@ -1,0 +1,6 @@
+/target/
+/release/
+/data/
+*.log
+*.pdb
+*.tmp

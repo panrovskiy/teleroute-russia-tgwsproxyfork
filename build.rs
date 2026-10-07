@@ -21,12 +21,13 @@ fn main() {
     let embedded = out_dir.join("wintun.dll");
     fs::copy(&source, &embedded).expect("failed to copy wintun.dll into OUT_DIR");
 
+    // Do not embed an absolute Windows path into generated Rust source.
+    // Using OUT_DIR at compile time keeps the generated source valid on
+    // Windows paths containing backslashes and avoids raw-string delimiter
+    // mistakes.
     let generated = out_dir.join("wintun_embedded.rs");
     fs::write(
         generated,
-        format!(
-            "pub static WINTUN_DLL: &[u8] = include_bytes!(r#\"{}\");\n",
-            embedded.display()
-        ),
+        "pub static WINTUN_DLL: &[u8] = include_bytes!(concat!(env!(\"OUT_DIR\"), \"/wintun.dll\"));\n",
     ).expect("failed to generate embedded Wintun source");
 }
