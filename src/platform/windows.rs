@@ -47,7 +47,11 @@ pub fn relaunch_as_admin_and_connect() -> anyhow::Result<()> {
 
 /// Ask Telegram Desktop to add the local SOCKS5 proxy.
 pub fn open_telegram_socks_proxy(host: &str, port: u16) -> anyhow::Result<()> {
-    let uri = format!("tg://socks?server={host}&port={port}");
+    let advertised_host = match host {
+        "0.0.0.0" | "::" | "[::]" => "127.0.0.1",
+        other => other,
+    };
+    let uri = format!("tg://socks?server={advertised_host}&port={port}");
     std::process::Command::new("explorer.exe").arg(&uri).spawn()?;
     Ok(())
 }
