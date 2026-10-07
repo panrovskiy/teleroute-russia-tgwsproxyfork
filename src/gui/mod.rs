@@ -215,7 +215,7 @@ impl TeleRouteApp {
         if ui.button("Run full test").clicked() { self.start_diagnostics(); }
         if let Some(r) = &self.diagnostics {
             egui::Grid::new("diagnostics-grid").num_columns(2).striped(true).show(ui, |ui| {
-                for (k, v) in [("DNS", &r.dns), ("Telegram TCP", &r.telegram_tcp), ("WebSocket", &r.websocket), ("TCP fallback", &r.tcp_fallback), ("UDP", &r.udp), ("TUN", &r.tun), ("Call transport", &r.call_transport)] {
+                for (k, v) in [("SOCKS5", &r.socks5), ("DNS", &r.dns), ("Telegram TCP (direct)", &r.telegram_tcp), ("WebSocket (DC IP + SNI)", &r.websocket), ("TCP fallback", &r.tcp_fallback), ("UDP", &r.udp), ("TUN", &r.tun), ("Call transport", &r.call_transport)] {
                     ui.strong(k);
                     ui.label(v);
                     ui.end_row();
