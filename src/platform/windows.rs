@@ -20,13 +20,39 @@ pub fn is_elevated() -> bool {
     matches!(output, Ok(o) if o.status.success())
 }
 
+/// Ask Windows UAC for elevation and start a second GUI instance that connects immediately.
+/// Returns an error when the user cancels the UAC prompt or the process could not be started.
+pub fn relaunch_as_admin_and_connect() -> anyhow::Result<()> {
+    let exe = std::env::current_exe()?;
+    let exe_quoted = exe.to_string_lossy().replace(''', "''");
+    let command = format!(
+        "Start-Process -FilePath '{}' -ArgumentList '--elevated-connect' -Verb RunAs",
+        exe_quoted
+    );
+
+    let status = std::process::Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &command,
+        ])
+        .status()?;
+
+    if !status.success() {
+        anyhow::bail!("Administrator permission was not granted");
+    }
+
+    Ok(())
+}
 
 mod embedded {
     include!(concat!(env!("OUT_DIR"), "/wintun_embedded.rs"));
 }
 
 pub fn ensure_wintun_dll() -> anyhow::Result<PathBuf> {
-
     let base = std::env::temp_dir().join("TeleRoute").join("runtime");
     fs::create_dir_all(&base)?;
     let target = base.join("wintun-0.14.1.dll");
@@ -35,10 +61,15 @@ pub fn ensure_wintun_dll() -> anyhow::Result<PathBuf> {
         Ok(existing) => existing.as_slice() != embedded::WINTUN_DLL,
         Err(_) => true,
     };
+
     if needs_write {
         let tmp = target.with_extension("dll.tmp");
         fs::write(&tmp, embedded::WINTUN_DLL)?;
+        if target.exists() {
+            let _ = fs::remove_file(&target);
+        }
         fs::rename(&tmp, &target)?;
     }
+
     Ok(target)
 }
