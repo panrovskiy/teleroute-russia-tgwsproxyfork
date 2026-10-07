@@ -45,6 +45,9 @@ mod windows_tun {
     impl TunManager {
         pub async fn start(config: &AppConfig, stats: Arc<Statistics>) -> anyhow::Result<Self> {
             if config.routing.route_all_traffic { anyhow::bail!("full Internet routing is intentionally disabled: TeleRoute currently provides selective Telegram UDP routing without a TCP userspace stack"); }
+            if !crate::platform::windows::is_elevated() {
+                anyhow::bail!("Administrator privileges are required to create the Wintun adapter");
+            }
             let dll = crate::platform::windows::ensure_wintun_dll()?;
             let wintun = unsafe { wintun_bindings::load_from_path(&dll) }?;
             let adapter = match Adapter::open(&wintun, &config.tun.adapter_name) {
