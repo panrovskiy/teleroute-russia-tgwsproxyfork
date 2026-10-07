@@ -24,7 +24,7 @@ pub fn is_elevated() -> bool {
 /// Returns an error when the user cancels the UAC prompt or the process could not be started.
 pub fn relaunch_as_admin_and_connect() -> anyhow::Result<()> {
     let exe = std::env::current_exe()?;
-    let exe_quoted = exe.to_string_lossy().replace(''', "''");
+    let exe_quoted = exe.to_string_lossy().replace('\'', "''");
     let command = format!(
         "Start-Process -FilePath '{}' -ArgumentList '--elevated-connect' -Verb RunAs",
         exe_quoted
