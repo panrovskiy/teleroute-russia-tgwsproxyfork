@@ -306,7 +306,8 @@ impl TeleRouteApp {
         ui.add_space(12.0);
 
         let cards = [
-            ("SOCKS5", format!("127.0.0.1:{}", cfg.proxy.port)),
+            ("Frontend", format!("{:?}", cfg.telegram.frontend)),
+            ("MTProto", format!("{}:{}", cfg.telegram.mtproto_bind, cfg.telegram.mtproto_port)),
             ("TUN", t.tun.clone()),
             ("UDP", t.udp.clone()),
             ("Calls", t.calls.clone()),
@@ -372,7 +373,7 @@ impl TeleRouteApp {
         if ui.button("Run full test").clicked() { self.start_diagnostics(); }
         if let Some(r) = &self.diagnostics {
             egui::Grid::new("diagnostics-grid").num_columns(2).striped(true).show(ui, |ui| {
-                for (k, v) in [("SOCKS5", &r.socks5), ("DNS", &r.dns), ("Telegram TCP (direct)", &r.telegram_tcp), ("WebSocket (DC IP + SNI)", &r.websocket), ("TCP fallback", &r.tcp_fallback), ("UDP", &r.udp), ("TUN", &r.tun), ("Call transport", &r.call_transport)] {
+                for (k, v) in [("SOCKS5", &r.socks5), ("MTProto", &r.mtproto), ("DNS", &r.dns), ("Telegram TCP (direct)", &r.telegram_tcp), ("WebSocket (DC IP + SNI)", &r.websocket), ("TCP fallback", &r.tcp_fallback), ("UDP", &r.udp), ("TUN", &r.tun), ("Call transport", &r.call_transport)] {
                     ui.strong(k);
                     ui.label(v);
                     ui.end_row();
