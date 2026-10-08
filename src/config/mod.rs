@@ -96,7 +96,7 @@ pub struct TunConfig {
 impl Default for TunConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             adapter_name: "TeleRoute".into(),
             address: "10.250.0.1".parse().unwrap(),
             mtu: 1280,
