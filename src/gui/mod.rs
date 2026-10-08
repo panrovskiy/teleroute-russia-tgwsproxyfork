@@ -1,7 +1,7 @@
 use crate::{app::{AppContext, ConnectionStatus}, config::Mode};
 use eframe::egui;
 use std::time::Instant;
-use tray_icon::{menu::{Menu, MenuEvent, MenuItem}, Icon, TrayIconBuilder};
+use tray_icon::{menu::{Menu, MenuItem}, Icon, TrayIconBuilder};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page { Connection, Diagnostics, Statistics, Logs, Settings }
@@ -16,7 +16,18 @@ pub fn run(ctx: AppContext, start_hidden: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-struct TrayState { _tray: tray_icon::TrayIcon, connect: MenuItem, disconnect: MenuItem, open: MenuItem, test: MenuItem, exit: MenuItem }
+#[derive(Clone, Copy)]
+enum TrayAction { Open, Test }
+
+struct TrayState {
+    _tray: tray_icon::TrayIcon,
+    connect: MenuItem,
+    disconnect: MenuItem,
+    open: MenuItem,
+    test: MenuItem,
+    exit: MenuItem,
+    rx: std::sync::mpsc::Receiver<TrayAction>,
+}
 
 struct TeleRouteApp {
     ctx: AppContext,
@@ -30,8 +41,8 @@ struct TeleRouteApp {
 }
 
 impl TeleRouteApp {
-    fn new(_cc: &eframe::CreationContext<'_>, ctx: AppContext) -> anyhow::Result<Self> {
-        let tray = build_tray().ok();
+    fn new(cc: &eframe::CreationContext<'_>, ctx: AppContext) -> anyhow::Result<Self> {
+        let tray = build_tray(ctx.clone(), cc.egui_ctx.clone()).ok();
         Ok(Self {
             ctx,
             page: Page::Connection,
@@ -57,22 +68,19 @@ impl TeleRouteApp {
     }
 
     fn poll_tray(&mut self, ctx: &egui::Context) {
-        let rx = MenuEvent::receiver();
+        let Some(tray) = self.tray.as_ref() else { return; };
+
         loop {
-            match rx.try_recv() {
-                Ok(event) => {
-                    if self.tray.as_ref().map(|t| event.id() == &t.connect.id()).unwrap_or(false) { self.ctx.connect(); }
-                    else if self.tray.as_ref().map(|t| event.id() == &t.disconnect.id()).unwrap_or(false) { self.ctx.disconnect(); }
-                    else if self.tray.as_ref().map(|t| event.id() == &t.open.id()).unwrap_or(false) {
-    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-}
-                    else if self.tray.as_ref().map(|t| event.id() == &t.test.id()).unwrap_or(false) { self.page = Page::Diagnostics; self.start_diagnostics(); }
-                    else if self.tray.as_ref().map(|t| event.id() == &t.exit.id()).unwrap_or(false) {
-                        self.force_exit = true;
-                        self.ctx.disconnect();
-                        std::process::exit(0);
-                    }
+            match tray.rx.try_recv() {
+                Ok(TrayAction::Open) => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                }
+                Ok(TrayAction::Test) => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    self.page = Page::Diagnostics;
+                    self.start_diagnostics();
                 }
                 Err(_) => break,
             }
@@ -318,11 +326,57 @@ fn responsive_card(ui: &mut egui::Ui, title: &str, value: &str) {
     });
 }
 fn human_bytes(n: u64) -> String { const U:[&str;4]=["B","KB","MB","GB"]; let mut v=n as f64; let mut i=0; while v>=1024.0 && i<3 {v/=1024.0;i+=1;} format!("{v:.1} {}",U[i]) }
-fn build_tray() -> anyhow::Result<TrayState> {
-    let menu = Menu::new(); let connect = MenuItem::new("Connect",true,None); let disconnect=MenuItem::new("Disconnect",true,None); let open=MenuItem::new("Open",true,None); let test=MenuItem::new("Test",true,None); let exit=MenuItem::new("Exit",true,None);
-    menu.append_items(&[&connect,&disconnect,&open,&test,&exit])?;
-    let rgba: Vec<u8> = std::iter::repeat([0x20u8, 0x95u8, 0xffu8, 0xffu8]).take(16*16).flatten().collect();
-    let icon = Icon::from_rgba(rgba,16,16)?;
-    let tray=TrayIconBuilder::new().with_menu(Box::new(menu)).with_tooltip("TeleRoute").with_icon(icon).build()?;
-    Ok(TrayState{_tray:tray,connect,disconnect,open,test,exit})
+fn build_tray(ctx: AppContext, egui_ctx: egui::Context) -> anyhow::Result<TrayState> {
+    let menu = Menu::new();
+    let connect = MenuItem::new("Connect", true, None);
+    let disconnect = MenuItem::new("Disconnect", true, None);
+    let open = MenuItem::new("Open", true, None);
+    let test = MenuItem::new("Test", true, None);
+    let exit = MenuItem::new("Exit", true, None);
+    menu.append_items(&[&connect, &disconnect, &open, &test, &exit])?;
+
+    let (tx, rx) = std::sync::mpsc::channel::<TrayAction>();
+    let connect_id = connect.id().clone();
+    let disconnect_id = disconnect.id().clone();
+    let open_id = open.id().clone();
+    let test_id = test.id().clone();
+    let exit_id = exit.id().clone();
+
+    tray_icon::menu::MenuEvent::set_event_handler(Some(move |event| {
+        if event.id() == connect_id {
+            ctx.connect();
+        } else if event.id() == disconnect_id {
+            ctx.disconnect();
+        } else if event.id() == open_id {
+            let _ = tx.send(TrayAction::Open);
+            egui_ctx.request_repaint();
+        } else if event.id() == test_id {
+            let _ = tx.send(TrayAction::Test);
+            egui_ctx.request_repaint();
+        } else if event.id() == exit_id {
+            ctx.disconnect();
+            std::process::exit(0);
+        }
+    }));
+
+    let rgba: Vec<u8> = std::iter::repeat([0x20u8, 0x95u8, 0xffu8, 0xffu8])
+        .take(16 * 16)
+        .flatten()
+        .collect();
+    let icon = Icon::from_rgba(rgba, 16, 16)?;
+    let tray = TrayIconBuilder::new()
+        .with_menu(Box::new(menu))
+        .with_tooltip("TeleRoute")
+        .with_icon(icon)
+        .build()?;
+
+    Ok(TrayState {
+        _tray: tray,
+        connect,
+        disconnect,
+        open,
+        test,
+        exit,
+        rx,
+    })
 }
