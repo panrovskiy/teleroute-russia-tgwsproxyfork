@@ -4,8 +4,25 @@ use std::{fs, net::IpAddr, path::PathBuf};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-pub enum Mode { Proxy, Calls, Full }
+pub enum Mode { Proxy, Calls, Full, Mtproto }
 impl Default for Mode { fn default() -> Self { Self::Full } }
+
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MtprotoConfig {
+    pub server: String,
+    pub port: u16,
+    pub secret: String,
+}
+impl Default for MtprotoConfig {
+    fn default() -> Self {
+        Self {
+            server: String::new(),
+            port: 443,
+            secret: String::new(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EndpointConfig {
@@ -115,6 +132,7 @@ impl Default for AutostartConfig { fn default() -> Self { Self { start_with_wind
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub proxy: ProxyConfig,
+    pub mtproto: MtprotoConfig,
     pub websocket: EndpointConfig,
     pub timeouts: Timeouts,
     pub tun: TunConfig,
@@ -127,7 +145,7 @@ pub struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            proxy: ProxyConfig::default(), websocket: EndpointConfig::default(), timeouts: Timeouts::default(), tun: TunConfig::default(),
+            proxy: ProxyConfig::default(), mtproto: MtprotoConfig::default(), websocket: EndpointConfig::default(), timeouts: Timeouts::default(), tun: TunConfig::default(),
             relay: RelayConfig::default(), routing: RoutingConfig::default(), logging: LoggingConfig::default(), autostart: AutostartConfig::default(), log_diagnostics: true,
         }
     }
