@@ -129,8 +129,24 @@ pub struct AutostartConfig {
 }
 impl Default for AutostartConfig { fn default() -> Self { Self { start_with_windows: false, start_connected: false, start_minimized: false, minimize_to_tray: true } } }
 
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TelegramIntegrationConfig {
+    #[serde(default = "default_true")]
+    pub auto_configure: bool,
+    #[serde(default)]
+    pub configured_proxy: Option<String>,
+}
+impl Default for TelegramIntegrationConfig {
+    fn default() -> Self {
+        Self { auto_configure: true, configured_proxy: None }
+    }
+}
+fn default_true() -> bool { true }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
+    #[serde(default)]
+    pub telegram: TelegramIntegrationConfig,
     pub proxy: ProxyConfig,
     #[serde(default)]
     pub mtproto: MtprotoConfig,
@@ -146,7 +162,7 @@ pub struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            proxy: ProxyConfig::default(), mtproto: MtprotoConfig::default(), websocket: EndpointConfig::default(), timeouts: Timeouts::default(), tun: TunConfig::default(),
+            telegram: TelegramIntegrationConfig::default(), proxy: ProxyConfig::default(), mtproto: MtprotoConfig::default(), websocket: EndpointConfig::default(), timeouts: Timeouts::default(), tun: TunConfig::default(),
             relay: RelayConfig::default(), routing: RoutingConfig::default(), logging: LoggingConfig::default(), autostart: AutostartConfig::default(), log_diagnostics: true,
         }
     }
@@ -175,6 +191,7 @@ mod tests {
         let cfg = AppConfig::default();
         let decoded: AppConfig = toml::from_str(&toml::to_string(&cfg).unwrap()).unwrap();
         assert_eq!(decoded.proxy.port, 1080);
+        assert!(decoded.telegram.auto_configure);
         assert_eq!(decoded.tun.mtu, 1280);
         assert!(!decoded.tun.telegram_udp_cidrs.is_empty());
     }
