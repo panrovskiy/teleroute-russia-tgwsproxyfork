@@ -45,7 +45,7 @@ impl TeleRouteApp {
     }
 
     fn status_text(&self) -> &'static str {
-        match self.ctx.status().status { ConnectionStatus::Connected => "CONNECTED", ConnectionStatus::Connecting => "CONNECTING", ConnectionStatus::Error => "ERROR", ConnectionStatus::Disconnected => "DISCONNECTED" }
+        match self.ctx.status().status { ConnectionStatus::Connected => "READY", ConnectionStatus::Connecting => "CONNECTING", ConnectionStatus::Error => "ERROR", ConnectionStatus::Disconnected => "DISCONNECTED" }
     }
 
     fn mode_text(&self) -> String { format!("{:?}", self.ctx.config.read().routing.mode) }
@@ -198,7 +198,7 @@ impl TeleRouteApp {
         ui.heading("Connection");
         ui.add_space(10.0);
         let cards = [
-            ("Telegram", self.status_text().to_owned()),
+            ("Proxy", self.status_text().to_owned()),
             ("Mode", self.mode_text()),
             ("Transport", route_transport),
             ("DC", route_dc),
