@@ -68,21 +68,27 @@ impl TeleRouteApp {
     }
 
     fn poll_tray(&mut self, ctx: &egui::Context) {
-        let Some(tray) = self.tray.as_ref() else { return; };
+        let actions: Vec<TrayAction> = {
+            let Some(tray) = self.tray.as_ref() else { return; };
+            let mut actions = Vec::new();
+            while let Ok(action) = tray.rx.try_recv() {
+                actions.push(action);
+            }
+            actions
+        };
 
-        loop {
-            match tray.rx.try_recv() {
-                Ok(TrayAction::Open) => {
+        for action in actions {
+            match action {
+                TrayAction::Open => {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 }
-                Ok(TrayAction::Test) => {
+                TrayAction::Test => {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                     self.page = Page::Diagnostics;
                     self.start_diagnostics();
                 }
-                Err(_) => break,
             }
         }
     }
@@ -342,7 +348,7 @@ fn build_tray(ctx: AppContext, egui_ctx: egui::Context) -> anyhow::Result<TraySt
     let test_id = test.id().clone();
     let exit_id = exit.id().clone();
 
-    tray_icon::menu::MenuEvent::set_event_handler(Some(move |event| {
+    tray_icon::menu::MenuEvent::set_event_handler(Some(move |event: tray_icon::menu::MenuEvent| {
         if event.id() == connect_id {
             ctx.connect();
         } else if event.id() == disconnect_id {
