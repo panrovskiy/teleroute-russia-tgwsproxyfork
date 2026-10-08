@@ -51,10 +51,10 @@ pub fn parse_secret_server_header(wire: [u8; 64], secret: &[u8; 16]) -> io::Resu
     let key = hasher.finalize();
 
     let iv = &prekey_iv[32..48];
-    let mut decrypt = make_cipher(&key, iv)?;
+    let mut handshake_cipher = make_cipher(&key, iv)?;
 
     let mut decrypted = wire;
-    decrypt.apply_keystream(&mut decrypted);
+    handshake_cipher.apply_keystream(&mut decrypted);
 
     let protocol = <[u8; 4]>::try_from(&decrypted[56..60]).unwrap();
     if !matches!(
@@ -76,6 +76,7 @@ pub fn parse_secret_server_header(wire: [u8; 64], secret: &[u8; 16]) -> io::Resu
     }
 
     // Incoming client payload starts after the 64-byte handshake.
+    let mut decrypt = make_cipher(&key, iv)?;
     let mut consumed = [0u8; 64];
     decrypt.apply_keystream(&mut consumed);
 
