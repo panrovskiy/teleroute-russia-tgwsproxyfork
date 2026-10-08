@@ -43,12 +43,6 @@ struct TeleRouteApp {
 
 impl TeleRouteApp {
     fn new(cc: &eframe::CreationContext<'_>, ctx: AppContext) -> anyhow::Result<Self> {
-        let mut style = (*cc.egui_ctx.style()).clone();
-        style.spacing.item_spacing = egui::vec2(10.0, 8.0);
-        style.spacing.button_padding = egui::vec2(12.0, 8.0);
-        style.visuals = egui::Visuals::dark();
-        cc.egui_ctx.set_style(style);
-
         let tray = build_tray(ctx.clone(), cc.egui_ctx.clone()).ok();
 
         Ok(Self {
