@@ -32,41 +32,56 @@ impl AppContext {
     pub fn status(&self) -> Telemetry { self.telemetry.read().clone() }
 
     pub fn connect(&self) {
-        if matches!(self.telemetry.read().status, ConnectionStatus::Connected | ConnectionStatus::Connecting) { return; }
+        if matches!(self.telemetry.read().status, ConnectionStatus::Connected | ConnectionStatus::Connecting) {
+            return;
+        }
 
         let config = self.config.read().clone();
 
-        #[cfg(windows)]
-        if config.routing.mode != Mode::Proxy && config.tun.enabled && !crate::platform::windows::is_elevated() {
-            {
-                let mut t = self.telemetry.write();
-                t.status = ConnectionStatus::Connecting;
-                t.tun = "ELEVATION REQUIRED".into();
-                t.udp = "WAITING".into();
-                t.calls = "WAITING".into();
-                t.error.clear();
-            }
+        if config.routing.mode == Mode::Mtproto {
+            let mut t = self.telemetry.write();
+            t.status = ConnectionStatus::Connecting;
+            t.error.clear();
+            t.tun = "DISABLED".into();
+            t.udp = "DISABLED".into();
+            t.calls = "UNAVAILABLE".into();
+            drop(t);
 
-            match crate::platform::windows::relaunch_as_admin_and_connect() {
-                Ok(()) => {
-                    // The elevated instance takes over. Do not continue starting
-                    // a second non-elevated TUN session in this process.
-                    std::process::exit(0);
-                }
-                Err(e) => {
+            #[cfg(windows)]
+            {
+                let server = config.mtproto.server.trim();
+                let secret = config.mtproto.secret.trim();
+                if server.is_empty() || secret.is_empty() {
                     let mut t = self.telemetry.write();
                     t.status = ConnectionStatus::Error;
-                    t.tun = "FAILED".into();
-                    t.udp = "UNAVAILABLE".into();
-                    t.calls = "UNAVAILABLE".into();
-                    t.error = format!("Administrator permission is required for Calls/Full mode: {e}");
+                    t.error = "MTProto requires server, port and secret".into();
                     return;
                 }
+
+                match crate::platform::windows::open_telegram_mtproto_proxy(
+                    server,
+                    config.mtproto.port,
+                    secret,
+                ) {
+                    Ok(()) => {
+                        let mut t = self.telemetry.write();
+                        t.status = ConnectionStatus::Connected;
+                        t.transport = "MTProto".into();
+                        t.dc = "remote proxy".into();
+                    }
+                    Err(e) => {
+                        let mut t = self.telemetry.write();
+                        t.status = ConnectionStatus::Error;
+                        t.error = format!("Could not open MTProto proxy in Telegram: {e}");
+                    }
+                }
             }
+            return;
         }
 
         self.telemetry.write().status = ConnectionStatus::Connecting;
         self.telemetry.write().error.clear();
+
         let stats = self.stats.clone();
         let telemetry = self.telemetry.clone();
         let token = CancellationToken::new();
@@ -75,16 +90,17 @@ impl AppContext {
 
         self.runtime.spawn(async move {
             let proxy = Socks5Server::new(config.clone(), stats.clone());
+
             let listener = match proxy.bind().await {
                 Ok(l) => l,
                 Err(e) => {
-                    let mut t = telemetry.write(); t.status = ConnectionStatus::Error; t.error = format!("SOCKS5 bind failed: {e}"); return;
+                    let mut t = telemetry.write();
+                    t.status = ConnectionStatus::Error;
+                    t.error = format!("SOCKS5 bind failed: {e}");
+                    return;
                 }
             };
 
-            // Telegram Desktop does not automatically discover TeleRoute's local
-            // SOCKS5 listener. Tell it explicitly through the supported tg://socks
-            // deep link as soon as the listener is ready.
             #[cfg(windows)]
             if let Err(e) = crate::platform::windows::open_telegram_socks_proxy(
                 &config.proxy.bind,
@@ -93,37 +109,48 @@ impl AppContext {
                 tracing::warn!(error = %e, "failed to open Telegram SOCKS5 setup link");
             }
 
-            telemetry.write().tun = if matches!(config.routing.mode, Mode::Proxy) || !config.tun.enabled { "INACTIVE".into() } else { "STARTING".into() };
+            if config.routing.mode == Mode::Calls || config.routing.mode == Mode::Full {
+                if config.tun.enabled {
+                    telemetry.write().tun = "STARTING".into();
 
-            if config.routing.mode != Mode::Proxy && config.tun.enabled {
-                #[cfg(windows)]
-                {
-                    match crate::tun::TunManager::start(&config, stats.clone()).await {
-                        Ok(tun) => {
-                            telemetry.write().tun = "ACTIVE".into();
-                            telemetry.write().udp = "READY".into();
-                            telemetry.write().calls = "READY (transport-level)".into();
-                            let child = shutdown_for_tasks.child_token();
-                            tokio::spawn(async move { let _ = tun.run(child).await; });
-                        }
-                        Err(e) => {
-                            telemetry.write().tun = "FAILED".into();
-                            telemetry.write().udp = "UNAVAILABLE".into();
-                            telemetry.write().calls = "UNAVAILABLE".into();
-                            telemetry.write().error = format!("TUN initialization failed: {e}");
+                    #[cfg(windows)]
+                    {
+                        match crate::tun::TunManager::start(&config, stats.clone()).await {
+                            Ok(tun) => {
+                                telemetry.write().tun = "ACTIVE".into();
+                                telemetry.write().udp = "READY".into();
+                                telemetry.write().calls = "READY (transport-level)".into();
+                                let child = shutdown_for_tasks.child_token();
+                                tokio::spawn(async move { let _ = tun.run(child).await; });
+                            }
+                            Err(e) => {
+                                telemetry.write().tun = "FAILED".into();
+                                telemetry.write().udp = "UNAVAILABLE".into();
+                                telemetry.write().calls = "UNAVAILABLE".into();
+                                telemetry.write().error = format!("TUN initialization failed: {e}");
+                            }
                         }
                     }
-                }
-                #[cfg(not(windows))]
-                {
-                    telemetry.write().tun = "UNSUPPORTED".into();
+
+                    #[cfg(not(windows))]
+                    {
+                        telemetry.write().tun = "UNSUPPORTED".into();
+                        telemetry.write().udp = "UNAVAILABLE".into();
+                        telemetry.write().calls = "UNAVAILABLE".into();
+                    }
+                } else {
+                    telemetry.write().tun = "DISABLED".into();
+                    telemetry.write().udp = "UNAVAILABLE".into();
                     telemetry.write().calls = "UNAVAILABLE".into();
                 }
+            } else {
+                telemetry.write().tun = "INACTIVE".into();
+                telemetry.write().udp = "NOT USED".into();
+                telemetry.write().calls = "UNAVAILABLE".into();
             }
 
-            // The SOCKS5 listener is usable immediately. WSS pool warm-up is
-            // deliberately moved off the critical connection path so Connect
-            // does not appear frozen while remote DCs are probed.
+            // Do not wait for remote WSS warm-up before declaring the local
+            // listener ready. The warm-up continues independently.
             let warmup_proxy = proxy.clone();
             tokio::spawn(async move {
                 warmup_proxy.warmup_wss_pool().await;
@@ -132,16 +159,22 @@ impl AppContext {
             {
                 let mut t = telemetry.write();
                 t.status = ConnectionStatus::Connected;
-                t.transport = if config.routing.prefer_wss { "WebSocket / fallback TCP".into() } else { "TCP".into() };
+                t.transport = if config.routing.prefer_wss {
+                    "WebSocket / fallback TCP".into()
+                } else {
+                    "TCP".into()
+                };
                 t.dc = "automatic".into();
             }
 
             if let Err(e) = proxy.run_on_listener(listener, token.clone()).await {
-                telemetry.write().status = ConnectionStatus::Error;
-                telemetry.write().error = format!("Core stopped: {e}");
+                let mut t = telemetry.write();
+                t.status = ConnectionStatus::Error;
+                t.error = format!("Proxy core stopped: {e}");
             } else if token.is_cancelled() {
-                telemetry.write().status = ConnectionStatus::Disconnected;
-                telemetry.write().transport = "—".into();
+                let mut t = telemetry.write();
+                t.status = ConnectionStatus::Disconnected;
+                t.transport = "—".into();
             }
         });
     }
