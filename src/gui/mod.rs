@@ -327,6 +327,13 @@ impl TeleRouteApp {
                 "SOCKS5 registration: {}",
                 cfg.telegram.configured_proxy.as_deref().unwrap_or("not registered")
             ));
+            if ui.button("Mark current SOCKS5 as already configured").clicked() {
+                let host = match cfg.proxy.bind.as_str() {
+                    "0.0.0.0" | "::" | "[::]" => "127.0.0.1",
+                    other => other,
+                };
+                cfg.telegram.configured_proxy = Some(format!("{}:{}", host, cfg.proxy.port));
+            }
             if ui.button("Forget SOCKS5 Telegram registration").clicked() {
                 cfg.telegram.configured_proxy = None;
             }
@@ -334,6 +341,14 @@ impl TeleRouteApp {
                 "MTProto registration: {}",
                 if cfg.telegram.configured_mtproto.is_some() { "registered" } else { "not registered" }
             ));
+            if ui.button("Mark current MTProto as already configured").clicked() {
+                cfg.telegram.configured_mtproto = Some(format!(
+                    "{}:{}:{}",
+                    cfg.mtproto.server.trim(),
+                    cfg.mtproto.port,
+                    cfg.mtproto.secret.trim()
+                ));
+            }
             if ui.button("Forget MTProto Telegram registration").clicked() {
                 cfg.telegram.configured_mtproto = None;
             }
