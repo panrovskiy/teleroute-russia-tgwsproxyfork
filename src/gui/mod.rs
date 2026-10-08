@@ -1,4 +1,4 @@
-use crate::{app::{AppContext, ConnectionStatus}, config::Mode};
+use crate::{app::{AppContext, ConnectionStatus}, config::{Mode, TelegramFrontend}};
 use eframe::egui;
 use std::time::Instant;
 use tray_icon::{menu::{Menu, MenuItem}, Icon, TrayIconBuilder};
@@ -457,21 +457,97 @@ impl TeleRouteApp {
             }
         });
         ui.collapsing("Telegram", |ui| {
-            ui.checkbox(&mut cfg.telegram.auto_configure, "Automatically configure local SOCKS5 once");
-            if let Some(proxy) = &cfg.telegram.configured_proxy {
-                ui.label(format!("Configured by TeleRoute: {proxy}"));
-            } else {
-                ui.label("Telegram proxy has not been configured by TeleRoute yet.");
-            }
-            if ui.button("Configure Telegram now").clicked() {
-                let host = match cfg.proxy.bind.as_str() {
-                    "0.0.0.0" | "::" | "[::]" => "127.0.0.1",
-                    other => other,
-                };
-                #[cfg(windows)]
-                {
-                    let _ = crate::platform::windows::open_telegram_socks_proxy(host, cfg.proxy.port);
-                    cfg.telegram.configured_proxy = Some(format!("{host}:{}", cfg.proxy.port));
+            ui.label("Telegram-native frontend used by the WebSocket bridge:");
+
+            ui.radio_value(
+                &mut cfg.telegram.frontend,
+                TelegramFrontend::MtprotoWs,
+                "MTProto WebSocket (recommended)",
+            );
+            ui.radio_value(
+                &mut cfg.telegram.frontend,
+                TelegramFrontend::Socks5,
+                "SOCKS5",
+            );
+
+            ui.checkbox(
+                &mut cfg.telegram.auto_configure,
+                "Automatically configure Telegram once",
+            );
+
+            match cfg.telegram.frontend {
+                TelegramFrontend::MtprotoWs => {
+                    ui.label("Calls/media use the Telegram MTProto media WebSocket path; TUN is optional.");
+                    ui.horizontal(|ui| {
+                        ui.label("Local port");
+                        ui.add(egui::Slider::new(&mut cfg.telegram.mtproto_port, 1..=65535));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Secret");
+                        ui.add_sized(
+                            [ui.available_width().min(420.0), 28.0],
+                            egui::TextEdit::singleline(&mut cfg.telegram.mtproto_secret),
+                        );
+                    });
+
+                    if let Some(proxy) = &cfg.telegram.configured_mtproto {
+                        ui.label(format!("Already configured: {proxy}"));
+                    } else {
+                        ui.label("Telegram MTProto proxy is not registered yet.");
+                    }
+
+                    if ui.button("Configure Telegram now").clicked() {
+                        #[cfg(windows)]
+                        {
+                            let host = cfg.telegram.mtproto_bind.clone();
+                            let tg_secret = format!("dd{}", cfg.telegram.mtproto_secret.trim());
+                            if crate::platform::windows::open_telegram_mtproto_proxy(
+                                &host,
+                                cfg.telegram.mtproto_port,
+                                &tg_secret,
+                            ).is_ok() {
+                                cfg.telegram.configured_mtproto = Some(format!(
+                                    "{}:{}:{}",
+                                    host,
+                                    cfg.telegram.mtproto_port,
+                                    cfg.telegram.mtproto_secret.trim()
+                                ));
+                            }
+                        }
+                    }
+
+                    if ui.button("Forget Telegram MTProto registration").clicked() {
+                        cfg.telegram.configured_mtproto = None;
+                    }
+                }
+
+                TelegramFrontend::Socks5 => {
+                    let host = match cfg.proxy.bind.as_str() {
+                        "0.0.0.0" | "::" | "[::]" => "127.0.0.1",
+                        other => other,
+                    };
+
+                    ui.label("Generic local SOCKS5 frontend. Telegram media/calls are not guaranteed through SOCKS5.");
+                    ui.label(format!("SOCKS5 endpoint: {host}:{}", cfg.proxy.port));
+
+                    if let Some(proxy) = &cfg.telegram.configured_proxy {
+                        ui.label(format!("Already configured: {proxy}"));
+                    } else {
+                        ui.label("Telegram SOCKS5 is not registered yet.");
+                    }
+
+                    if ui.button("Configure Telegram now").clicked() {
+                        #[cfg(windows)]
+                        {
+                            if crate::platform::windows::open_telegram_socks_proxy(host, cfg.proxy.port).is_ok() {
+                                cfg.telegram.configured_proxy = Some(format!("{host}:{}", cfg.proxy.port));
+                            }
+                        }
+                    }
+
+                    if ui.button("Forget Telegram SOCKS5 registration").clicked() {
+                        cfg.telegram.configured_proxy = None;
+                    }
                 }
             }
         });
