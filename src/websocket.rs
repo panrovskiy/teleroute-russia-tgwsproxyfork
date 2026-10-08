@@ -76,9 +76,6 @@ impl WebSocketTransport {
         let media = client_obfs.parsed.dc < 0;
         self.stats.ws_attempts.fetch_add(1, Ordering::Relaxed);
 
-        let mut last_error: Option<anyhow::Error> = None;
-        let mut candidates = self.endpoints(dc_id).into_iter();
-
         if let Some(mut ws) = self.pool.take(dc_id).await {
             self.stats.ws_success.fetch_add(1, Ordering::Relaxed);
             self.stats.current_dc.store(dc_id as i64, Ordering::Relaxed);
@@ -89,16 +86,29 @@ impl WebSocketTransport {
             return self.pipe(client, client_obfs, &mut ws, upstream).await;
         }
 
-        while let Some(url) = candidates.next() {
-            match timeout(
-                Duration::from_millis(self.config.timeouts.connect_ms),
-                self.connect(&url, dc_id),
-            ).await {
+        // Race all configured WSS endpoints instead of trying them serially.
+        // The first successful TLS/WebSocket handshake wins, reducing startup
+        // latency significantly on networks where one endpoint is slow/blocked.
+        let endpoints = self.endpoints(dc_id);
+        let deadline = Duration::from_millis(self.config.timeouts.connect_ms);
+        let mut attempts = futures_util::stream::FuturesUnordered::new();
+
+        for url in endpoints {
+            attempts.push(async {
+                let result = timeout(deadline, self.connect(&url, dc_id)).await;
+                (url, result)
+            });
+        }
+
+        let mut last_error: Option<anyhow::Error> = None;
+
+        while let Some((url, result)) = attempts.next().await {
+            match result {
                 Ok(Ok((mut ws, _))) => {
                     self.stats.ws_success.fetch_add(1, Ordering::Relaxed);
                     self.stats.current_dc.store(dc_id as i64, Ordering::Relaxed);
                     self.stats.current_transport.store(1, Ordering::Relaxed);
-                    info!(dc = dc_id, media, %url, via_ip = ?dc::default_ipv4(dc_id), "WSS transport connected");
+                    info!(dc = dc_id, media, %url, "WSS transport connected");
 
                     let upstream = obfs2::new_client(client_obfs.parsed.protocol, client_obfs.parsed.dc)?;
                     ws.send(Message::Binary(upstream.wire_header.to_vec().into())).await?;
