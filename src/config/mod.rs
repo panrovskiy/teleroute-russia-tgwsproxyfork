@@ -180,18 +180,14 @@ mod tests {
     }
 
     #[test] fn legacy_config_without_mtproto_still_loads() {
-        let legacy = r#"
-[proxy]
-bind = "127.0.0.1"
-port = 1080
-username = false
-password = false
-"#;
-        let result: Result<AppConfig, _> = toml::from_str(legacy);
-        assert!(result.is_err()); // other required sections are intentionally still validated.
-        let mut value: toml::Value = toml::from_str(legacy).unwrap();
-        value["mtproto"] = toml::Value::Table(toml::map::Map::new());
-        let cfg: AppConfig = value.try_into().unwrap();
-        assert_eq!(cfg.mtproto.port, 443);
+        let cfg = AppConfig::default();
+        let mut value: toml::Value = toml::from_str(&toml::to_string(&cfg).unwrap()).unwrap();
+        if let toml::Value::Table(root) = &mut value {
+            root.remove("mtproto");
+        }
+        let decoded: AppConfig = value.try_into().unwrap();
+        assert_eq!(decoded.mtproto.port, 443);
+        assert!(decoded.mtproto.server.is_empty());
+        assert!(decoded.mtproto.secret.is_empty());
     }
 }
