@@ -5,7 +5,7 @@ use windows_sys::{
         Foundation::HWND,
         UI::{
             Shell::ShellExecuteW,
-            WindowsAndMessaging::SW_SHOWNORMAL,
+            WindowsAndMessaging::{MessageBoxW, SW_SHOWNORMAL, MB_ICONERROR, MB_OK},
         },
     },
 };
@@ -36,6 +36,28 @@ pub fn set_autostart(enabled: bool, exe: &Path) -> anyhow::Result<()> {
 pub fn is_elevated() -> bool {
     let output = std::process::Command::new("net").arg("session").output();
     matches!(output, Ok(o) if o.status.success())
+}
+
+pub fn show_startup_error(message: &str) {
+    let title = wide_str("TeleRoute");
+    let text = wide_str(message);
+    unsafe {
+        MessageBoxW(
+            0 as HWND,
+            text.as_ptr(),
+            title.as_ptr(),
+            MB_OK | MB_ICONERROR,
+        );
+    }
+}
+
+pub fn write_startup_error(message: &str) {
+    if let Some(base) = std::env::var_os("LOCALAPPDATA") {
+        let dir = std::path::PathBuf::from(base).join("TeleRoute");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("startup-error.log");
+        let _ = std::fs::write(&path, format!("{message}\n"));
+    }
 }
 
 /// Start a new elevated GUI instance without blocking the current GUI thread.
