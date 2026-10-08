@@ -1,4 +1,4 @@
-use crate::{config::{AppConfig, Mode}, logging, proxy::socks5::Socks5Server, statistics::{Statistics, StatsSnapshot}};
+use crate::{config::{AppConfig, Mode, TelegramFrontend}, logging, proxy::socks5::Socks5Server, statistics::{Statistics, StatsSnapshot}};
 use futures_util::FutureExt;
 use std::panic::AssertUnwindSafe;
 use parking_lot::RwLock;
@@ -34,12 +34,17 @@ impl AppContext {
     pub fn status(&self) -> Telemetry { self.telemetry.read().clone() }
 
     pub fn connect(&self) {
-        if matches!(self.telemetry.read().status, ConnectionStatus::Connected | ConnectionStatus::Connecting) {
+        if matches!(
+            self.telemetry.read().status,
+            ConnectionStatus::Connected | ConnectionStatus::Connecting
+        ) {
             return;
         }
 
         let config = self.config.read().clone();
 
+        // Remote MTProto mode is a separate user-supplied proxy and intentionally
+        // does not provide the local Telegram WS bridge/call path.
         if config.routing.mode == Mode::Mtproto {
             let mut t = self.telemetry.write();
             t.status = ConnectionStatus::Connecting;
@@ -53,19 +58,19 @@ impl AppContext {
             {
                 let server = config.mtproto.server.trim();
                 let secret = config.mtproto.secret.trim();
+
                 if server.is_empty() || secret.is_empty() {
                     let mut t = self.telemetry.write();
                     t.status = ConnectionStatus::Error;
-                    t.error = "MTProto requires server, port and secret".into();
+                    t.error = "External MTProto requires server, port and secret".into();
                     return;
                 }
 
                 let proxy_id = format!("{}:{}:{}", server, config.mtproto.port, secret);
-                let should_auto_open = config.telegram.auto_configure
-                    && config.telegram.configured_mtproto.as_deref() != Some(proxy_id.as_str());
 
-                if should_auto_open {
-                    let proxy_id_for_store = proxy_id.clone();
+                if config.telegram.auto_configure
+                    && config.telegram.configured_mtproto.as_deref() != Some(proxy_id.as_str())
+                {
                     match crate::platform::windows::open_telegram_mtproto_proxy(
                         server,
                         config.mtproto.port,
@@ -73,20 +78,19 @@ impl AppContext {
                     ) {
                         Ok(()) => {
                             let mut cfg = self.config.write();
-                            cfg.telegram.configured_mtproto = Some(proxy_id_for_store);
+                            cfg.telegram.configured_mtproto = Some(proxy_id);
                             let _ = cfg.save();
                         }
-                        Err(e) => {
-                            tracing::warn!(error = %e, "failed to schedule Telegram MTProto setup link");
-                        }
+                        Err(e) => tracing::warn!(error = %e, "failed to open external MTProto link"),
                     }
                 }
 
                 let mut t = self.telemetry.write();
                 t.status = ConnectionStatus::Connected;
-                t.transport = "MTProto".into();
+                t.transport = "External MTProto".into();
                 t.dc = "remote proxy".into();
             }
+
             return;
         }
 
@@ -98,141 +102,186 @@ impl AppContext {
         let config_store = self.config.clone();
         let token = CancellationToken::new();
         *self.shutdown.write() = Some(token.clone());
-        let shutdown_for_tasks = token.clone();
 
         self.runtime.spawn(async move {
-            let proxy = Socks5Server::new(config.clone(), stats.clone());
+            let mtproto_pool = crate::websocket::WebSocketPool::default();
 
-            let listener = match proxy.bind().await {
-                Ok(l) => l,
+            let frontend_result: anyhow::Result<(String, String)> = match config.telegram.frontend {
+                TelegramFrontend::MtprotoWs => {
+                    let server = crate::proxy::mtproto::MtprotoServer::new(
+                        config.clone(),
+                        stats.clone(),
+                        mtproto_pool.clone(),
+                    )?;
+
+                    let listener = server.bind().await?;
+                    let addr = listener.local_addr()?;
+
+                    let child = token.child_token();
+                    tokio::spawn(async move {
+                        if let Err(e) = server.run_on_listener(listener, child).await {
+                            tracing::error!(error = %e, "local MTProto frontend stopped");
+                        }
+                    });
+
+                    #[cfg(windows)]
+                    {
+                        let host = config.telegram.mtproto_bind.clone();
+                        let port = config.telegram.mtproto_port;
+                        let secret = config.telegram.mtproto_secret.clone();
+                        let proxy_id = format!("{}:{}:{}", host, port, secret);
+
+                        if config.telegram.auto_configure
+                            && config.telegram.configured_mtproto.as_deref() != Some(proxy_id.as_str())
+                        {
+                            let cfg_store = config_store.clone();
+                            tokio::spawn(async move {
+                                let tg_secret = format!("dd{secret}");
+                                match crate::platform::windows::open_telegram_mtproto_proxy(
+                                    &host,
+                                    port,
+                                    &tg_secret,
+                                ) {
+                                    Ok(()) => {
+                                        let mut cfg = cfg_store.write();
+                                        cfg.telegram.configured_mtproto = Some(proxy_id);
+                                        if let Err(e) = cfg.save() {
+                                            tracing::warn!(error = %e, "could not persist Telegram MTProto registration state");
+                                        }
+                                    }
+                                    Err(e) => tracing::warn!(error = %e, "failed to open local Telegram MTProto link"),
+                                }
+                            });
+                        }
+                    }
+
+                    Ok((
+                        "MTProto WebSocket".into(),
+                        format!("127.0.0.1:{}", addr.port()),
+                    ))
+                }
+
+                TelegramFrontend::Socks5 => {
+                    let proxy = Socks5Server::new(config.clone(), stats.clone());
+                    let listener = proxy.bind().await?;
+                    let addr = listener.local_addr()?;
+
+                    #[cfg(windows)]
+                    {
+                        let host = match config.proxy.bind.as_str() {
+                            "0.0.0.0" | "::" | "[::]" => "127.0.0.1",
+                            other => other,
+                        };
+                        let port = config.proxy.port;
+                        let proxy_id = format!("{}:{}", host, port);
+
+                        if config.telegram.auto_configure
+                            && config.telegram.configured_proxy.as_deref() != Some(proxy_id.as_str())
+                        {
+                            let cfg_store = config_store.clone();
+                            let host_for_task = host.to_owned();
+                            tokio::spawn(async move {
+                                match crate::platform::windows::open_telegram_socks_proxy(
+                                    &host_for_task,
+                                    port,
+                                ) {
+                                    Ok(()) => {
+                                        let mut cfg = cfg_store.write();
+                                        cfg.telegram.configured_proxy = Some(proxy_id);
+                                        let _ = cfg.save();
+                                    }
+                                    Err(e) => tracing::warn!(error = %e, "failed to open Telegram SOCKS5 link"),
+                                }
+                            });
+                        }
+                    }
+
+                    let child = token.child_token();
+                    tokio::spawn(async move {
+                        if let Err(e) = proxy.run_on_listener(listener, child).await {
+                            tracing::error!(error = %e, "SOCKS5 frontend stopped");
+                        }
+                    });
+
+                    Ok((
+                        "SOCKS5".into(),
+                        format!("127.0.0.1:{}", addr.port()),
+                    ))
+                }
+            };
+
+            let (transport, frontend_addr) = match frontend_result {
+                Ok(v) => v,
                 Err(e) => {
                     let mut t = telemetry.write();
                     t.status = ConnectionStatus::Error;
-                    t.error = format!("SOCKS5 bind failed: {e}");
+                    t.error = format!("Telegram frontend failed: {e}");
                     return;
                 }
             };
 
-            #[cfg(windows)]
-            {
-                let advertised_host = match config.proxy.bind.as_str() {
-                    "0.0.0.0" | "::" | "[::]" => "127.0.0.1",
-                    other => other,
-                };
-                let proxy_id = format!("{}:{}", advertised_host, config.proxy.port);
-                let should_auto_open = config.telegram.auto_configure
-                    && config.telegram.configured_proxy.as_deref() != Some(proxy_id.as_str());
+            // TUN is optional. Telegram WS media uses the negative-DC routing
+            // path (kwsN-1) directly, matching Flowseal's architecture.
+            if config.tun.enabled && matches!(config.routing.mode, Mode::Calls | Mode::Full) {
+                telemetry.write().tun = "STARTING".into();
+                telemetry.write().udp = "STARTING".into();
+                telemetry.write().calls = "STARTING".into();
 
-                if should_auto_open {
-                    let proxy_id_for_task = proxy_id.clone();
-                    let host = advertised_host.to_owned();
-                    let port = config.proxy.port;
-                    let store = config_store.clone();
+                let tun_config = config.clone();
+                let tun_stats = stats.clone();
+                let tun_telemetry = telemetry.clone();
+                let tun_shutdown = token.child_token();
 
-                    tokio::spawn(async move {
-                        match crate::platform::windows::open_telegram_socks_proxy(&host, port) {
-                            Ok(()) => {
-                                let mut cfg = store.write();
-                                cfg.telegram.configured_proxy = Some(proxy_id_for_task);
-                                if let Err(e) = cfg.save() {
-                                    tracing::warn!(error = %e, "proxy started but Telegram setup state could not be saved");
-                                }
-                            }
-                            Err(e) => tracing::warn!(error = %e, "failed to schedule Telegram SOCKS5 setup link"),
-                        }
-                    });
-                }
-            }
-
-            if config.routing.mode == Mode::Calls || config.routing.mode == Mode::Full {
-                if config.tun.enabled {
-                    telemetry.write().tun = "STARTING".into();
-                    telemetry.write().udp = "STARTING".into();
-                    telemetry.write().calls = "STARTING".into();
-
-                    let tun_config = config.clone();
-                    let tun_stats = stats.clone();
-                    let tun_telemetry = telemetry.clone();
-                    let tun_shutdown = shutdown_for_tasks.child_token();
-
-                    tokio::spawn(async move {
-                        #[cfg(windows)]
+                tokio::spawn(async move {
+                    #[cfg(windows)]
+                    {
+                        match AssertUnwindSafe(crate::tun::TunManager::start(&tun_config, tun_stats))
+                            .catch_unwind()
+                            .await
                         {
-                            match AssertUnwindSafe(crate::tun::TunManager::start(&tun_config, tun_stats))
-                                .catch_unwind()
-                                .await
-                            {
-                                Ok(Ok(tun)) => {
-                                    tun_telemetry.write().tun = "ACTIVE".into();
-                                    tun_telemetry.write().udp = "READY".into();
-                                    tun_telemetry.write().calls = "READY (transport-level)".into();
-
-                                    tokio::spawn(async move {
-                                        let result = AssertUnwindSafe(tun.run(tun_shutdown)).catch_unwind().await;
-                                        if let Err(panic) = result {
-                                            tracing::error!(?panic, "TUN task panicked");
-                                        }
-                                    });
-                                }
-                                Ok(Err(e)) => {
-                                    tun_telemetry.write().tun = "FAILED".into();
-                                    tun_telemetry.write().udp = "UNAVAILABLE".into();
-                                    tun_telemetry.write().calls = "UNAVAILABLE".into();
-                                    tun_telemetry.write().error = format!("TUN initialization failed: {e}");
-                                }
-                                Err(panic) => {
-                                    tun_telemetry.write().tun = "FAILED".into();
-                                    tun_telemetry.write().udp = "UNAVAILABLE".into();
-                                    tun_telemetry.write().calls = "UNAVAILABLE".into();
-                                    tun_telemetry.write().error = "TUN initialization panicked; see logs".into();
-                                    tracing::error!(?panic, "TUN initialization panicked");
-                                }
+                            Ok(Ok(tun)) => {
+                                tun_telemetry.write().tun = "ACTIVE".into();
+                                tun_telemetry.write().udp = "READY".into();
+                                tun_telemetry.write().calls = "READY (TUN + WS media)".into();
+                                tokio::spawn(async move {
+                                    let _ = AssertUnwindSafe(tun.run(tun_shutdown))
+                                        .catch_unwind()
+                                        .await;
+                                });
+                            }
+                            Ok(Err(e)) => {
+                                tun_telemetry.write().tun = "FAILED".into();
+                                tun_telemetry.write().udp = "UNAVAILABLE".into();
+                                tun_telemetry.write().calls = "WS media still available".into();
+                                tun_telemetry.write().error = format!("Optional TUN initialization failed: {e}");
+                            }
+                            Err(panic) => {
+                                tun_telemetry.write().tun = "FAILED".into();
+                                tun_telemetry.write().udp = "UNAVAILABLE".into();
+                                tun_telemetry.write().calls = "WS media still available".into();
+                                tracing::error!(?panic, "optional TUN task panicked");
                             }
                         }
-
-                        #[cfg(not(windows))]
-                        {
-                            tun_telemetry.write().tun = "UNSUPPORTED".into();
-                            tun_telemetry.write().udp = "UNAVAILABLE".into();
-                            tun_telemetry.write().calls = "UNAVAILABLE".into();
-                        }
-                    });
-                } else {
-                    telemetry.write().tun = "DISABLED".into();
-                    telemetry.write().udp = "UNAVAILABLE".into();
-                    telemetry.write().calls = "UNAVAILABLE".into();
-                }
+                    }
+                });
             } else {
-                telemetry.write().tun = "INACTIVE".into();
-                telemetry.write().udp = "NOT USED".into();
-                telemetry.write().calls = "UNAVAILABLE".into();
+                telemetry.write().tun = "NOT REQUIRED".into();
+                telemetry.write().udp = "NOT REQUIRED".into();
+                telemetry.write().calls = "AVAILABLE VIA WS MEDIA".into();
             }
 
-            // The local SOCKS5 listener is ready immediately. No DC probing or
-            // WSS warm-up is performed during Connect; the first real Telegram
-            // flow establishes WSS lazily for its actual DC. 
             {
                 let mut t = telemetry.write();
                 t.status = ConnectionStatus::Connected;
-                t.transport = if config.routing.prefer_wss {
-                    "WebSocket / fallback TCP".into()
-                } else {
-                    "TCP".into()
-                };
+                t.transport = transport;
                 t.dc = "automatic".into();
+                t.error.clear();
             }
 
-            if let Err(e) = proxy.run_on_listener(listener, token.clone()).await {
-                let mut t = telemetry.write();
-                t.status = ConnectionStatus::Error;
-                t.error = format!("Proxy core stopped: {e}");
-            } else if token.is_cancelled() {
-                let mut t = telemetry.write();
-                t.status = ConnectionStatus::Disconnected;
-                t.transport = "—".into();
-            }
+            info!("Telegram frontend ready at {frontend_addr}");
         });
     }
+
 
     pub fn disconnect(&self) {
         if let Some(token) = self.shutdown.write().take() { token.cancel(); }
