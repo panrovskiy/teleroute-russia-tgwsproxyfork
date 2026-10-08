@@ -181,11 +181,16 @@ mod tests {
 
     #[test] fn legacy_config_without_mtproto_still_loads() {
         let cfg = AppConfig::default();
-        let mut value: toml::Value = toml::from_str(&toml::to_string(&cfg).unwrap()).unwrap();
-        if let toml::Value::Table(root) = &mut value {
-            root.remove("mtproto");
-        }
-        let decoded: AppConfig = value.try_into().unwrap();
+        let serialized = toml::to_string(&cfg).unwrap();
+        let mut root: toml::map::Map<String, toml::Value> = toml::from_str::<toml::Value>(&serialized)
+            .unwrap()
+            .as_table()
+            .cloned()
+            .unwrap();
+
+        root.remove("mtproto");
+
+        let decoded: AppConfig = toml::Value::Table(root).try_into().unwrap();
         assert_eq!(decoded.mtproto.port, 443);
         assert!(decoded.mtproto.server.is_empty());
         assert!(decoded.mtproto.secret.is_empty());
