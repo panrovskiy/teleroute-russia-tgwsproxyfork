@@ -1,4 +1,6 @@
 use crate::{config::{AppConfig, Mode}, logging, proxy::socks5::Socks5Server, statistics::{Statistics, StatsSnapshot}};
+use futures_util::FutureExt;
+use std::panic::AssertUnwindSafe;
 use parking_lot::RwLock;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
@@ -144,19 +146,34 @@ impl AppContext {
 
                     #[cfg(windows)]
                     {
-                        match crate::tun::TunManager::start(&config, stats.clone()).await {
-                            Ok(tun) => {
+                        match AssertUnwindSafe(crate::tun::TunManager::start(&config, stats.clone()))
+                            .catch_unwind()
+                            .await
+                        {
+                            Ok(Ok(tun)) => {
                                 telemetry.write().tun = "ACTIVE".into();
                                 telemetry.write().udp = "READY".into();
                                 telemetry.write().calls = "READY (transport-level)".into();
                                 let child = shutdown_for_tasks.child_token();
-                                tokio::spawn(async move { let _ = tun.run(child).await; });
+                                tokio::spawn(async move {
+                                    let result = AssertUnwindSafe(tun.run(child)).catch_unwind().await;
+                                    if let Err(panic) = result {
+                                        tracing::error!(?panic, "TUN task panicked");
+                                    }
+                                });
                             }
-                            Err(e) => {
+                            Ok(Err(e)) => {
                                 telemetry.write().tun = "FAILED".into();
                                 telemetry.write().udp = "UNAVAILABLE".into();
                                 telemetry.write().calls = "UNAVAILABLE".into();
                                 telemetry.write().error = format!("TUN initialization failed: {e}");
+                            }
+                            Err(panic) => {
+                                telemetry.write().tun = "FAILED".into();
+                                telemetry.write().udp = "UNAVAILABLE".into();
+                                telemetry.write().calls = "UNAVAILABLE".into();
+                                telemetry.write().error = "TUN initialization panicked; see logs".into();
+                                tracing::error!(?panic, "TUN initialization panicked");
                             }
                         }
                     }
