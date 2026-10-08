@@ -84,6 +84,7 @@ impl AppContext {
 
         let stats = self.stats.clone();
         let telemetry = self.telemetry.clone();
+        let config_store = self.config.clone();
         let token = CancellationToken::new();
         *self.shutdown.write() = Some(token.clone());
         let shutdown_for_tasks = token.clone();
@@ -102,11 +103,39 @@ impl AppContext {
             };
 
             #[cfg(windows)]
-            if let Err(e) = crate::platform::windows::open_telegram_socks_proxy(
-                &config.proxy.bind,
-                config.proxy.port,
-            ) {
-                tracing::warn!(error = %e, "failed to open Telegram SOCKS5 setup link");
+            {
+                let advertised_host = match config.proxy.bind.as_str() {
+                    "0.0.0.0" | "::" | "[::]" => "127.0.0.1",
+                    other => other,
+                };
+                let proxy_id = format!("{}:{}", advertised_host, config.proxy.port);
+                let should_auto_open = config.telegram.auto_configure
+                    && config.telegram.configured_proxy.as_deref() != Some(proxy_id.as_str());
+
+                if should_auto_open {
+                    let proxy_id_for_task = proxy_id.clone();
+                    let host = advertised_host.to_owned();
+                    let port = config.proxy.port;
+                    let store = config_store.clone();
+
+                    tokio::spawn(async move {
+                        let result = tokio::task::spawn_blocking(move || {
+                            crate::platform::windows::open_telegram_socks_proxy(&host, port)
+                        }).await;
+
+                        match result {
+                            Ok(Ok(())) => {
+                                let mut cfg = store.write();
+                                cfg.telegram.configured_proxy = Some(proxy_id_for_task);
+                                if let Err(e) = cfg.save() {
+                                    tracing::warn!(error = %e, "proxy started but Telegram setup state could not be saved");
+                                }
+                            }
+                            Ok(Err(e)) => tracing::warn!(error = %e, "failed to open Telegram SOCKS5 setup link"),
+                            Err(e) => tracing::warn!(error = %e, "Telegram setup task failed"),
+                        }
+                    });
+                }
             }
 
             if config.routing.mode == Mode::Calls || config.routing.mode == Mode::Full {
@@ -148,13 +177,6 @@ impl AppContext {
                 telemetry.write().udp = "NOT USED".into();
                 telemetry.write().calls = "UNAVAILABLE".into();
             }
-
-            // Do not wait for remote WSS warm-up before declaring the local
-            // listener ready. The warm-up continues independently.
-            let warmup_proxy = proxy.clone();
-            tokio::spawn(async move {
-                warmup_proxy.warmup_wss_pool().await;
-            });
 
             {
                 let mut t = telemetry.write();
