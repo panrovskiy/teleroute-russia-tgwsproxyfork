@@ -316,7 +316,14 @@ impl TeleRouteApp {
 
     fn settings_page(&mut self, ui: &mut egui::Ui) {
         ui.heading("Settings"); let mut cfg = self.ctx.config.write();
-        ui.collapsing("General", |ui| { ui.checkbox(&mut cfg.autostart.start_with_windows,"Start with Windows"); ui.checkbox(&mut cfg.autostart.start_connected,"Start connected"); ui.checkbox(&mut cfg.autostart.start_minimized,"Start minimized"); ui.checkbox(&mut cfg.autostart.minimize_to_tray,"Minimize to tray"); });
+        ui.collapsing("General", |ui| {
+            ui.checkbox(&mut cfg.autostart.start_with_windows,"Start with Windows");
+            ui.checkbox(&mut cfg.autostart.start_connected,"Start connected");
+            ui.checkbox(&mut cfg.autostart.start_minimized,"Start minimized");
+            ui.checkbox(&mut cfg.autostart.minimize_to_tray,"Minimize to tray");
+            ui.separator();
+            ui.checkbox(&mut cfg.telegram.auto_configure,"Automatically add proxy to Telegram once");
+        });
         ui.collapsing("Telegram", |ui| {
             ui.checkbox(&mut cfg.telegram.auto_configure, "Automatically configure local SOCKS5 once");
             if let Some(proxy) = &cfg.telegram.configured_proxy {
