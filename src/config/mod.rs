@@ -132,6 +132,7 @@ impl Default for AutostartConfig { fn default() -> Self { Self { start_with_wind
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub proxy: ProxyConfig,
+    #[serde(default)]
     pub mtproto: MtprotoConfig,
     pub websocket: EndpointConfig,
     pub timeouts: Timeouts,
@@ -176,5 +177,21 @@ mod tests {
         assert_eq!(decoded.proxy.port, 1080);
         assert_eq!(decoded.tun.mtu, 1280);
         assert!(!decoded.tun.telegram_udp_cidrs.is_empty());
+    }
+
+    #[test] fn legacy_config_without_mtproto_still_loads() {
+        let legacy = r#"
+[proxy]
+bind = "127.0.0.1"
+port = 1080
+username = false
+password = false
+"#;
+        let result: Result<AppConfig, _> = toml::from_str(legacy);
+        assert!(result.is_err()); // other required sections are intentionally still validated.
+        let mut value: toml::Value = toml::from_str(legacy).unwrap();
+        value["mtproto"] = toml::Value::Table(toml::map::Map::new());
+        let cfg: AppConfig = value.try_into().unwrap();
+        assert_eq!(cfg.mtproto.port, 443);
     }
 }
