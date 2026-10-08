@@ -4,8 +4,7 @@ use windows_sys::{
     Win32::{
         Foundation::HWND,
         UI::{
-            Shell::ShellExecuteW,
-            WindowsAndMessaging::{MessageBoxW, SW_SHOWNORMAL, MB_ICONERROR, MB_OK},
+            WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK},
         },
     },
 };
