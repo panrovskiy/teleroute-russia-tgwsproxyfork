@@ -221,38 +221,35 @@ async fn read_probe_prefix(
     stream: &mut TcpStream,
     timeout_duration: Duration,
 ) -> anyhow::Result<Vec<u8>> {
-    let result = timeout(timeout_duration, async {
-        let mut out = Vec::with_capacity(64);
-        let mut buf = [0u8; 64];
+    let deadline = tokio::time::Instant::now() + timeout_duration;
+    let mut out = Vec::with_capacity(64);
+    let mut buf = [0u8; 64];
 
-        while out.len() < 64 {
-            let n = stream.read(&mut buf).await?;
-            if n == 0 {
-                break;
-            }
-
-            let needed = 64 - out.len();
-            let take = n.min(needed);
-            out.extend_from_slice(&buf[..take]);
-
-            if out.len() == 64 {
-                break;
-            }
+    while out.len() < 64 {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            break;
         }
 
-        Ok::<Vec<u8>, std::io::Error>(out)
-    })
-    .await;
+        let remaining = deadline.saturating_duration_since(now);
 
-    match result {
-        Ok(Ok(bytes)) => Ok(bytes),
-        Ok(Err(e)) => Err(e.into()),
-        Err(_) => {
-            // The timeout is intentionally non-fatal. Whatever bytes arrived
-            // must still be forwarded unchanged to the original destination.
-            Ok(Vec::new())
+        match timeout(remaining, stream.read(&mut buf)).await {
+            Ok(Ok(0)) => break,
+            Ok(Ok(n)) => {
+                let needed = 64 - out.len();
+                let take = n.min(needed);
+                out.extend_from_slice(&buf[..take]);
+
+                if out.len() == 64 {
+                    break;
+                }
+            }
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => break,
         }
     }
+
+    Ok(out)
 }
 
 async fn read_request(stream: &mut TcpStream) -> anyhow::Result<(String, u16)> {
