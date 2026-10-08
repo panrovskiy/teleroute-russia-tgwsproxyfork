@@ -5,6 +5,7 @@ use tokio::{net::{lookup_host, TcpStream, UdpSocket}, time::timeout};
 #[derive(Debug, Clone, Default)]
 pub struct DiagnosticReport {
     pub socks5: String,
+    pub mtproto: String,
     pub dns: String,
     pub telegram_tcp: String,
     pub websocket: String,
@@ -18,6 +19,17 @@ pub async fn run_full(config: &AppConfig, _stats: Arc<Statistics>, tun_active: b
     let socks5 = match timeout(
         Duration::from_secs(2),
         TcpStream::connect((config.proxy.bind.as_str(), config.proxy.port)),
+    ).await {
+        Ok(Ok(_)) => "LISTENING",
+        _ => "NOT LISTENING",
+    };
+
+    let mtproto = match timeout(
+        Duration::from_secs(2),
+        TcpStream::connect((
+            config.telegram.mtproto_bind.as_str(),
+            config.telegram.mtproto_port,
+        )),
     ).await {
         Ok(Ok(_)) => "LISTENING",
         _ => "NOT LISTENING",
@@ -59,16 +71,21 @@ pub async fn run_full(config: &AppConfig, _stats: Arc<Statistics>, tun_active: b
     };
 
     let tun = if tun_active { "ACTIVE" } else { "INACTIVE" };
-    let call = if tun_active
-        && (config.relay.endpoint.is_some() || config.routing.direct_udp_fallback)
-    {
-        "READY (transport-level)"
+    let call = if config.telegram.frontend == crate::config::TelegramFrontend::MtprotoWs {
+        if ws == "OK" {
+            "READY (MTProto media WS)"
+        } else {
+            "WAITING FOR WSS"
+        }
+    } else if tun_active {
+        "READY (TUN)"
     } else {
         "UNAVAILABLE"
     };
 
     DiagnosticReport {
         socks5: socks5.into(),
+        mtproto: mtproto.into(),
         dns: dns.into(),
         telegram_tcp: tcp.into(),
         websocket: ws.into(),
