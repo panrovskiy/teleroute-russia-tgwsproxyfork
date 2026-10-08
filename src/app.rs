@@ -5,6 +5,7 @@ use parking_lot::RwLock;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
 use tokio_util::sync::CancellationToken;
+use tracing::info;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionStatus { Disconnected, Connecting, Connected, Error }
@@ -107,7 +108,7 @@ impl AppContext {
             let mtproto_pool = crate::websocket::WebSocketPool::default();
 
             let frontend_result: anyhow::Result<(String, String)> = match config.telegram.frontend {
-                TelegramFrontend::MtprotoWs => {
+                TelegramFrontend::MtprotoWs => (async {
                     let server = crate::proxy::mtproto::MtprotoServer::new(
                         config.clone(),
                         stats.clone(),
@@ -159,9 +160,9 @@ impl AppContext {
                         "MTProto WebSocket".into(),
                         format!("127.0.0.1:{}", addr.port()),
                     ))
-                }
+                }).await,
 
-                TelegramFrontend::Socks5 => {
+                TelegramFrontend::Socks5 => (async {
                     let proxy = Socks5Server::new(config.clone(), stats.clone());
                     let listener = proxy.bind().await?;
                     let addr = listener.local_addr()?;
@@ -207,7 +208,7 @@ impl AppContext {
                         "SOCKS5".into(),
                         format!("127.0.0.1:{}", addr.port()),
                     ))
-                }
+                }).await
             };
 
             let (transport, frontend_addr) = match frontend_result {
