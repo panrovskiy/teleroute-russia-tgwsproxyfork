@@ -60,23 +60,32 @@ impl AppContext {
                     return;
                 }
 
-                match crate::platform::windows::open_telegram_mtproto_proxy(
-                    server,
-                    config.mtproto.port,
-                    secret,
-                ) {
-                    Ok(()) => {
-                        let mut t = self.telemetry.write();
-                        t.status = ConnectionStatus::Connected;
-                        t.transport = "MTProto".into();
-                        t.dc = "remote proxy".into();
-                    }
-                    Err(e) => {
-                        let mut t = self.telemetry.write();
-                        t.status = ConnectionStatus::Error;
-                        t.error = format!("Could not open MTProto proxy in Telegram: {e}");
+                let proxy_id = format!("{}:{}:{}", server, config.mtproto.port, secret);
+                let should_auto_open = config.telegram.auto_configure
+                    && config.telegram.configured_mtproto.as_deref() != Some(proxy_id.as_str());
+
+                if should_auto_open {
+                    let proxy_id_for_store = proxy_id.clone();
+                    match crate::platform::windows::open_telegram_mtproto_proxy(
+                        server,
+                        config.mtproto.port,
+                        secret,
+                    ) {
+                        Ok(()) => {
+                            let mut cfg = self.config.write();
+                            cfg.telegram.configured_mtproto = Some(proxy_id_for_store);
+                            let _ = cfg.save();
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "failed to schedule Telegram MTProto setup link");
+                        }
                     }
                 }
+
+                let mut t = self.telemetry.write();
+                t.status = ConnectionStatus::Connected;
+                t.transport = "MTProto".into();
+                t.dc = "remote proxy".into();
             }
             return;
         }
@@ -143,47 +152,56 @@ impl AppContext {
             if config.routing.mode == Mode::Calls || config.routing.mode == Mode::Full {
                 if config.tun.enabled {
                     telemetry.write().tun = "STARTING".into();
+                    telemetry.write().udp = "STARTING".into();
+                    telemetry.write().calls = "STARTING".into();
 
-                    #[cfg(windows)]
-                    {
-                        match AssertUnwindSafe(crate::tun::TunManager::start(&config, stats.clone()))
-                            .catch_unwind()
-                            .await
+                    let tun_config = config.clone();
+                    let tun_stats = stats.clone();
+                    let tun_telemetry = telemetry.clone();
+                    let tun_shutdown = shutdown_for_tasks.child_token();
+
+                    tokio::spawn(async move {
+                        #[cfg(windows)]
                         {
-                            Ok(Ok(tun)) => {
-                                telemetry.write().tun = "ACTIVE".into();
-                                telemetry.write().udp = "READY".into();
-                                telemetry.write().calls = "READY (transport-level)".into();
-                                let child = shutdown_for_tasks.child_token();
-                                tokio::spawn(async move {
-                                    let result = AssertUnwindSafe(tun.run(child)).catch_unwind().await;
-                                    if let Err(panic) = result {
-                                        tracing::error!(?panic, "TUN task panicked");
-                                    }
-                                });
-                            }
-                            Ok(Err(e)) => {
-                                telemetry.write().tun = "FAILED".into();
-                                telemetry.write().udp = "UNAVAILABLE".into();
-                                telemetry.write().calls = "UNAVAILABLE".into();
-                                telemetry.write().error = format!("TUN initialization failed: {e}");
-                            }
-                            Err(panic) => {
-                                telemetry.write().tun = "FAILED".into();
-                                telemetry.write().udp = "UNAVAILABLE".into();
-                                telemetry.write().calls = "UNAVAILABLE".into();
-                                telemetry.write().error = "TUN initialization panicked; see logs".into();
-                                tracing::error!(?panic, "TUN initialization panicked");
+                            match AssertUnwindSafe(crate::tun::TunManager::start(&tun_config, tun_stats))
+                                .catch_unwind()
+                                .await
+                            {
+                                Ok(Ok(tun)) => {
+                                    tun_telemetry.write().tun = "ACTIVE".into();
+                                    tun_telemetry.write().udp = "READY".into();
+                                    tun_telemetry.write().calls = "READY (transport-level)".into();
+
+                                    tokio::spawn(async move {
+                                        let result = AssertUnwindSafe(tun.run(tun_shutdown)).catch_unwind().await;
+                                        if let Err(panic) = result {
+                                            tracing::error!(?panic, "TUN task panicked");
+                                        }
+                                    });
+                                }
+                                Ok(Err(e)) => {
+                                    tun_telemetry.write().tun = "FAILED".into();
+                                    tun_telemetry.write().udp = "UNAVAILABLE".into();
+                                    tun_telemetry.write().calls = "UNAVAILABLE".into();
+                                    tun_telemetry.write().error = format!("TUN initialization failed: {e}");
+                                }
+                                Err(panic) => {
+                                    tun_telemetry.write().tun = "FAILED".into();
+                                    tun_telemetry.write().udp = "UNAVAILABLE".into();
+                                    tun_telemetry.write().calls = "UNAVAILABLE".into();
+                                    tun_telemetry.write().error = "TUN initialization panicked; see logs".into();
+                                    tracing::error!(?panic, "TUN initialization panicked");
+                                }
                             }
                         }
-                    }
 
-                    #[cfg(not(windows))]
-                    {
-                        telemetry.write().tun = "UNSUPPORTED".into();
-                        telemetry.write().udp = "UNAVAILABLE".into();
-                        telemetry.write().calls = "UNAVAILABLE".into();
-                    }
+                        #[cfg(not(windows))]
+                        {
+                            tun_telemetry.write().tun = "UNSUPPORTED".into();
+                            tun_telemetry.write().udp = "UNAVAILABLE".into();
+                            tun_telemetry.write().calls = "UNAVAILABLE".into();
+                        }
+                    });
                 } else {
                     telemetry.write().tun = "DISABLED".into();
                     telemetry.write().udp = "UNAVAILABLE".into();
@@ -195,6 +213,9 @@ impl AppContext {
                 telemetry.write().calls = "UNAVAILABLE".into();
             }
 
+            // The local SOCKS5 listener is ready immediately. No DC probing or
+            // WSS warm-up is performed during Connect; the first real Telegram
+            // flow establishes WSS lazily for its actual DC. 
             {
                 let mut t = telemetry.write();
                 t.status = ConnectionStatus::Connected;
