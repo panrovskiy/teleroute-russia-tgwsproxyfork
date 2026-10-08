@@ -43,7 +43,14 @@ struct TeleRouteApp {
 
 impl TeleRouteApp {
     fn new(cc: &eframe::CreationContext<'_>, ctx: AppContext) -> anyhow::Result<Self> {
+        let mut style = (*cc.egui_ctx.style()).clone();
+        style.spacing.item_spacing = egui::vec2(10.0, 8.0);
+        style.spacing.button_padding = egui::vec2(12.0, 8.0);
+        style.visuals = egui::Visuals::dark();
+        cc.egui_ctx.set_style(style);
+
         let tray = build_tray(ctx.clone(), cc.egui_ctx.clone()).ok();
+
         Ok(Self {
             ctx,
             page: Page::Connection,
@@ -225,43 +232,145 @@ impl TeleRouteApp {
     }
 
     fn connection_page(&mut self, ui: &mut egui::Ui) {
-        let t = self.ctx.status(); let s = self.ctx.snapshot();
+        let t = self.ctx.status();
+        let s = self.ctx.snapshot();
+        let cfg = self.ctx.config.read().clone();
+
         let route_transport = s.current_transport.to_string();
-        let route_dc = s.current_dc.map(|v| v.to_string()).unwrap_or_else(|| t.dc.clone());
-        ui.heading("Connection");
-        ui.add_space(10.0);
+        let route_dc = s.current_dc
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| t.dc.clone());
+
+        ui.heading(
+            egui::RichText::new("Connection")
+                .size(24.0)
+                .strong(),
+        );
+        ui.add_space(8.0);
+
+        let (status_label, status_color) = match t.status {
+            ConnectionStatus::Connected => ("READY", egui::Color32::from_rgb(75, 190, 120)),
+            ConnectionStatus::Connecting => ("CONNECTING", egui::Color32::from_rgb(235, 180, 70)),
+            ConnectionStatus::Error => ("ERROR", egui::Color32::from_rgb(225, 85, 85)),
+            ConnectionStatus::Disconnected => ("DISCONNECTED", egui::Color32::from_rgb(145, 150, 160)),
+        };
+
+        egui::Frame::group(ui.style())
+            .inner_margin(egui::Margin::same(16))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.label(
+                            egui::RichText::new("TeleRoute")
+                                .size(13.0)
+                                .weak(),
+                        );
+                        ui.add_space(2.0);
+                        ui.label(
+                            egui::RichText::new(status_label)
+                                .size(28.0)
+                                .strong()
+                                .color(status_color),
+                        );
+                        ui.label(format!("Mode: {:?}", cfg.routing.mode));
+                    });
+
+                    ui.add_space(24.0);
+
+                    ui.vertical(|ui| {
+                        ui.label(egui::RichText::new("Transport").weak());
+                        ui.label(egui::RichText::new(&route_transport).strong());
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new("DC").weak());
+                        ui.label(egui::RichText::new(&route_dc).strong());
+                    });
+
+                    ui.with_layout(
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            let button_text =
+                                if t.status == ConnectionStatus::Connected { "DISCONNECT" } else { "CONNECT" };
+                            let button = egui::Button::new(
+                                egui::RichText::new(button_text).strong().size(16.0),
+                            );
+
+                            if ui
+                                .add_sized([190.0, 54.0], button)
+                                .clicked()
+                            {
+                                if t.status == ConnectionStatus::Connected {
+                                    self.ctx.disconnect();
+                                } else {
+                                    self.ctx.connect();
+                                }
+                            }
+                        },
+                    );
+                });
+            });
+
+        ui.add_space(12.0);
+
         let cards = [
-            ("Proxy", self.status_text().to_owned()),
-            ("Mode", self.mode_text()),
-            ("Transport", route_transport),
-            ("DC", route_dc),
-            ("Ping", s.ping_ms.map(|v| format!("{v} ms")).unwrap_or_else(|| "—".into())),
+            ("SOCKS5", format!("127.0.0.1:{}", cfg.proxy.port)),
+            ("TUN", t.tun.clone()),
             ("UDP", t.udp.clone()),
             ("Calls", t.calls.clone()),
+            (
+                "Ping",
+                s.ping_ms
+                    .map(|v| format!("{v} ms"))
+                    .unwrap_or_else(|| "—".into()),
+            ),
+            ("Active", s.active_connections.to_string()),
+            ("Upload", human_bytes(s.bytes_up)),
+            ("Download", human_bytes(s.bytes_down)),
         ];
-        let columns = ((ui.available_width() / 180.0).floor() as usize).clamp(1, 4);
-        ui.spacing_mut().item_spacing.y = 8.0;
+
+        let columns = ((ui.available_width() / 190.0).floor() as usize).clamp(1, 4);
+
         for row in cards.chunks(columns) {
             ui.columns(row.len(), |cols| {
-                for (i, (title, value)) in row.iter().enumerate() {
-                    responsive_card(&mut cols[i], title, value);
+                for (index, (title, value)) in row.iter().enumerate() {
+                    responsive_card(&mut cols[index], title, value);
                 }
             });
+            ui.add_space(6.0);
         }
-        ui.add_space(16.0);
-        ui.label(format!("SOCKS5: 127.0.0.1:{}", self.ctx.config.read().proxy.port));
-        ui.label(format!("TUN: {}", t.tun));
-        ui.label(format!("Active connections: {}", s.active_connections));
-        ui.label(format!("↑ {}  ↓ {}", human_bytes(s.bytes_up), human_bytes(s.bytes_down)));
-        ui.add_space(20.0);
-        let button = if t.status == ConnectionStatus::Connected { "DISCONNECT" } else { "CONNECT" };
-        let button_width = ui.available_width().min(360.0);
-        ui.add_sized([button_width, 58.0], egui::Button::new(button)).clicked().then(|| {
-            if t.status == ConnectionStatus::Connected { self.ctx.disconnect(); } else { self.ctx.connect(); }
-        });
-        if !t.error.is_empty() { ui.colored_label(egui::Color32::from_rgb(210,70,70), &t.error); }
+
+        if !t.error.is_empty() {
+            egui::Frame::group(ui.style())
+                .inner_margin(egui::Margin::same(12))
+                .show(ui, |ui| {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(225, 85, 85),
+                        egui::RichText::new("Connection error").strong(),
+                    );
+                    ui.add_space(4.0);
+                    ui.label(&t.error);
+                });
+            ui.add_space(8.0);
+        }
+
         ui.separator();
-        ui.label("Calls readiness is transport-level until a real Telegram Desktop voice/video call is completed end-to-end.");
+
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new("Telegram integration").strong());
+            if cfg.telegram.configured_proxy.is_some() {
+                ui.label(
+                    egui::RichText::new("SOCKS5 configured")
+                        .color(egui::Color32::from_rgb(75, 190, 120)),
+                );
+            } else {
+                ui.label("Not registered yet");
+            }
+
+            if ui.button("Diagnostics").clicked() {
+                self.page = Page::Diagnostics;
+            }
+        });
+
+        ui.small("WSS connects lazily when Telegram creates its real MTProto connection. Calls require the separate UDP/TUN path.");
     }
 
     fn diagnostics_page(&mut self, ui: &mut egui::Ui) {
