@@ -130,20 +130,15 @@ impl AppContext {
                     let store = config_store.clone();
 
                     tokio::spawn(async move {
-                        let result = tokio::task::spawn_blocking(move || {
-                            crate::platform::windows::open_telegram_socks_proxy(&host, port)
-                        }).await;
-
-                        match result {
-                            Ok(Ok(())) => {
+                        match crate::platform::windows::open_telegram_socks_proxy(&host, port) {
+                            Ok(()) => {
                                 let mut cfg = store.write();
                                 cfg.telegram.configured_proxy = Some(proxy_id_for_task);
                                 if let Err(e) = cfg.save() {
                                     tracing::warn!(error = %e, "proxy started but Telegram setup state could not be saved");
                                 }
                             }
-                            Ok(Err(e)) => tracing::warn!(error = %e, "failed to open Telegram SOCKS5 setup link"),
-                            Err(e) => tracing::warn!(error = %e, "Telegram setup task failed"),
+                            Err(e) => tracing::warn!(error = %e, "failed to schedule Telegram SOCKS5 setup link"),
                         }
                     });
                 }
