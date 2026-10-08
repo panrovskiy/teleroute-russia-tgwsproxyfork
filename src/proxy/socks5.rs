@@ -1,8 +1,10 @@
 use crate::{config::AppConfig, statistics::Statistics, telegram::obfs2, websocket::{self, WebSocketPool}};
 use std::{net::IpAddr, sync::{atomic::Ordering, Arc}, time::Duration};
+use std::panic::AssertUnwindSafe;
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{lookup_host, TcpListener, TcpStream}, time::timeout};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
+use futures_util::FutureExt;
 
 pub struct Socks5Server {
     config: AppConfig,
@@ -52,8 +54,18 @@ impl Socks5Server {
                         this.stats.connections.fetch_add(1, Ordering::Relaxed);
                         this.stats.active_connections.fetch_add(1, Ordering::Relaxed);
 
-                        if let Err(e) = this.handle(stream).await {
-                            debug!(peer = %peer, error = %e, "SOCKS5 connection closed");
+                        let result = AssertUnwindSafe(this.handle(stream))
+                            .catch_unwind()
+                            .await;
+
+                        match result {
+                            Ok(Ok(())) => {}
+                            Ok(Err(e)) => {
+                                debug!(peer = %peer, error = %e, "SOCKS5 connection closed");
+                            }
+                            Err(panic) => {
+                                error!(peer = %peer, ?panic, "SOCKS5 connection handler panicked");
+                            }
                         }
 
                         this.stats.active_connections.fetch_sub(1, Ordering::Relaxed);
