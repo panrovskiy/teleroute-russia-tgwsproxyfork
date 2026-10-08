@@ -60,29 +60,6 @@ pub fn write_startup_error(message: &str) {
     }
 }
 
-/// Start a new elevated GUI instance without blocking the current GUI thread.
-pub fn relaunch_as_admin_and_connect() -> anyhow::Result<()> {
-    let exe = wide(&std::env::current_exe()?.into_os_string());
-    let verb = wide_str("runas");
-    let args = wide_str("--elevated-connect");
-
-    let result = unsafe {
-        ShellExecuteW(
-            0 as HWND,
-            verb.as_ptr(),
-            exe.as_ptr(),
-            args.as_ptr(),
-            ptr::null(),
-            SW_SHOWNORMAL,
-        )
-    };
-
-    if (result as isize) <= 32 {
-        anyhow::bail!("Windows UAC elevation was not started (ShellExecuteW code {})", result as isize);
-    }
-
-    Ok(())
-}
 
 /// Ask Telegram Desktop to add the local SOCKS5 proxy through its registered URI handler.
 /// ShellExecuteW uses the Windows shell association for tg:// instead of launching Explorer.
