@@ -1,4 +1,4 @@
-use std::{ffi::OsStr, fs, os::windows::ffi::OsStrExt, path::{Path, PathBuf}, ptr};
+use std::{ffi::OsStr, fs, os::windows::{ffi::OsStrExt, process::CommandExt}, path::{Path, PathBuf}};
 
 use windows_sys::{
     Win32::{
@@ -63,29 +63,18 @@ pub fn write_startup_error(message: &str) {
 
 /// Ask Telegram Desktop to add the local SOCKS5 proxy through its registered URI handler.
 /// ShellExecuteW uses the Windows shell association for tg:// instead of launching Explorer.
-fn shell_open_uri_detached(uri: String) {
-    std::thread::spawn(move || {
-        // Give the main GUI/network thread time to finish Connect. The Telegram
-        // protocol handler must never be part of the proxy startup critical path.
-        std::thread::sleep(std::time::Duration::from_millis(250));
-        let operation = wide_str("open");
-        let target = wide_str(&uri);
+fn launch_uri_detached(uri: String) -> anyhow::Result<()> {
+    // Do not invoke ShellExecuteW from the elevated GUI process. Starting the
+    // protocol through a hidden cmd.exe keeps Telegram in the user's normal
+    // desktop context and isolates any protocol-handler failure from TeleRoute.
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-        let result = unsafe {
-            ShellExecuteW(
-                0 as HWND,
-                operation.as_ptr(),
-                target.as_ptr(),
-                ptr::null(),
-                ptr::null(),
-                SW_SHOWNORMAL,
-            )
-        };
-
-        if (result as isize) <= 32 {
-            tracing::warn!(code = result as isize, %uri, "Windows failed to open Telegram URI");
-        }
-    });
+    std::process::Command::new("cmd.exe")
+        .creation_flags(CREATE_NO_WINDOW)
+        .args(["/C", "start", "", &uri])
+        .spawn()
+        .map(|_| ())
+        .map_err(Into::into)
 }
 
 pub fn open_telegram_socks_proxy(host: &str, port: u16) -> anyhow::Result<()> {
@@ -93,13 +82,16 @@ pub fn open_telegram_socks_proxy(host: &str, port: u16) -> anyhow::Result<()> {
         "0.0.0.0" | "::" | "[::]" => "127.0.0.1",
         other => other,
     };
-    shell_open_uri_detached(format!("tg://socks?server={advertised_host}&port={port}"));
-    Ok(())
+
+    launch_uri_detached(format!(
+        "tg://socks?server={advertised_host}&port={port}"
+    ))
 }
 
 pub fn open_telegram_mtproto_proxy(server: &str, port: u16, secret: &str) -> anyhow::Result<()> {
-    shell_open_uri_detached(format!("tg://proxy?server={server}&port={port}&secret={secret}"));
-    Ok(())
+    launch_uri_detached(format!(
+        "tg://proxy?server={server}&port={port}&secret={secret}"
+    ))
 }
 
 mod embedded {
