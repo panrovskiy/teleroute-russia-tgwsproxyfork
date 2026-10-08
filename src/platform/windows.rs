@@ -4,7 +4,8 @@ use windows_sys::{
     Win32::{
         Foundation::HWND,
         UI::{
-            WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK},
+            Shell::ShellExecuteW,
+            WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK, SW_SHOWNORMAL},
         },
     },
 };
@@ -35,6 +36,33 @@ pub fn set_autostart(enabled: bool, exe: &Path) -> anyhow::Result<()> {
 pub fn is_elevated() -> bool {
     let output = std::process::Command::new("net").arg("session").output();
     matches!(output, Ok(o) if o.status.success())
+}
+
+pub fn ensure_elevated_at_start() -> anyhow::Result<bool> {
+    if is_elevated() {
+        return Ok(false);
+    }
+
+    let exe = std::env::current_exe()?;
+    let verb = wide_str("runas");
+    let exe_w = wide(&exe.into_os_string());
+
+    let result = unsafe {
+        ShellExecuteW(
+            0 as HWND,
+            verb.as_ptr(),
+            exe_w.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+
+    if (result as isize) <= 32 {
+        anyhow::bail!("Windows administrator elevation was not granted (ShellExecuteW code {})", result as isize);
+    }
+
+    Ok(true)
 }
 
 pub fn show_startup_error(message: &str) {
