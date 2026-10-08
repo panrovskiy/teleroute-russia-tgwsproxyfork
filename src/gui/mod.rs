@@ -349,17 +349,17 @@ fn build_tray(ctx: AppContext, egui_ctx: egui::Context) -> anyhow::Result<TraySt
     let exit_id = exit.id().clone();
 
     tray_icon::menu::MenuEvent::set_event_handler(Some(move |event: tray_icon::menu::MenuEvent| {
-        if event.id() == connect_id {
+        if event.id() == &connect_id {
             ctx.connect();
-        } else if event.id() == disconnect_id {
+        } else if event.id() == &disconnect_id {
             ctx.disconnect();
-        } else if event.id() == open_id {
+        } else if event.id() == &open_id {
             let _ = tx.send(TrayAction::Open);
             egui_ctx.request_repaint();
-        } else if event.id() == test_id {
+        } else if event.id() == &test_id {
             let _ = tx.send(TrayAction::Test);
             egui_ctx.request_repaint();
-        } else if event.id() == exit_id {
+        } else if event.id() == &exit_id {
             ctx.disconnect();
             std::process::exit(0);
         }
