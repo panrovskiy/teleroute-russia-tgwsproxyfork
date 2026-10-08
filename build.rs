@@ -8,6 +8,11 @@ fn main() {
         return;
     }
 
+    // Always start the desktop application elevated on Windows. TUN/Wintun
+    // creation needs administrator privileges, so the UAC prompt is shown once
+    // at process startup instead of blocking the GUI when Connect is pressed.
+    println!("cargo:rustc-link-arg-bins=/MANIFESTUAC:level=requireAdministrator");
+
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set"));
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR is set"));
     let configured = env::var_os("WINTUN_DLL").map(PathBuf::from);
