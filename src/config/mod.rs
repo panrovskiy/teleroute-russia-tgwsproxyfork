@@ -1,11 +1,29 @@
 use directories_next::ProjectDirs;
 use serde::{Deserialize, Serialize};
+use rand::{rng, RngCore};
 use std::{fs, net::IpAddr, path::PathBuf};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Mode { Proxy, Calls, Full, Mtproto }
 impl Default for Mode { fn default() -> Self { Self::Full } }
+
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TelegramFrontend {
+    MtprotoWs,
+    Socks5,
+}
+impl Default for TelegramFrontend { fn default() -> Self { Self::MtprotoWs } }
+
+fn default_mtproto_local_bind() -> String { "127.0.0.1".into() }
+fn default_mtproto_local_port() -> u16 { 1443 }
+fn generate_mtproto_secret() -> String {
+    let mut bytes = [0u8; 16];
+    rng().fill_bytes(&mut bytes);
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
 
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,13 +153,29 @@ pub struct TelegramIntegrationConfig {
     #[serde(default = "default_true")]
     pub auto_configure: bool,
     #[serde(default)]
+    pub frontend: TelegramFrontend,
+    #[serde(default = "default_mtproto_local_bind")]
+    pub mtproto_bind: String,
+    #[serde(default = "default_mtproto_local_port")]
+    pub mtproto_port: u16,
+    #[serde(default = "generate_mtproto_secret")]
+    pub mtproto_secret: String,
+    #[serde(default)]
     pub configured_proxy: Option<String>,
     #[serde(default)]
     pub configured_mtproto: Option<String>,
 }
 impl Default for TelegramIntegrationConfig {
     fn default() -> Self {
-        Self { auto_configure: true, configured_proxy: None, configured_mtproto: None }
+        Self {
+            auto_configure: true,
+            frontend: TelegramFrontend::MtprotoWs,
+            mtproto_bind: "127.0.0.1".into(),
+            mtproto_port: 1443,
+            mtproto_secret: generate_mtproto_secret(),
+            configured_proxy: None,
+            configured_mtproto: None,
+        }
     }
 }
 fn default_true() -> bool { true }
