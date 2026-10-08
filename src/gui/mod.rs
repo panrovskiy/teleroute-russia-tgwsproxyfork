@@ -323,6 +323,20 @@ impl TeleRouteApp {
             ui.checkbox(&mut cfg.autostart.minimize_to_tray,"Minimize to tray");
             ui.separator();
             ui.checkbox(&mut cfg.telegram.auto_configure,"Automatically add proxy to Telegram once");
+            ui.label(format!(
+                "SOCKS5 registration: {}",
+                cfg.telegram.configured_proxy.as_deref().unwrap_or("not registered")
+            ));
+            if ui.button("Forget SOCKS5 Telegram registration").clicked() {
+                cfg.telegram.configured_proxy = None;
+            }
+            ui.label(format!(
+                "MTProto registration: {}",
+                if cfg.telegram.configured_mtproto.is_some() { "registered" } else { "not registered" }
+            ));
+            if ui.button("Forget MTProto Telegram registration").clicked() {
+                cfg.telegram.configured_mtproto = None;
+            }
         });
         ui.collapsing("Telegram", |ui| {
             ui.checkbox(&mut cfg.telegram.auto_configure, "Automatically configure local SOCKS5 once");
