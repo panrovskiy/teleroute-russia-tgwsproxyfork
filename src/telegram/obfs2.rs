@@ -1,4 +1,5 @@
 use aes::Aes256;
+use sha2::{Digest, Sha256};
 use ctr::cipher::{KeyIvInit, StreamCipher};
 use rand::{rng, RngCore};
 use std::io;
@@ -39,6 +40,60 @@ fn filtered_random_header() -> [u8; 64] {
         if second == 0 { continue; }
         return h;
     }
+}
+
+pub fn parse_secret_server_header(wire: [u8; 64], secret: &[u8; 16]) -> io::Result<ServerObfs> {
+    let prekey_iv = &wire[8..56];
+
+    let mut hasher = Sha256::new();
+    hasher.update(&wire[8..40]);
+    hasher.update(secret);
+    let key = hasher.finalize();
+
+    let iv = &prekey_iv[32..48];
+    let mut decrypt = make_cipher(&key, iv)?;
+
+    let mut decrypted = wire;
+    decrypt.apply_keystream(&mut decrypted);
+
+    let protocol = <[u8; 4]>::try_from(&decrypted[56..60]).unwrap();
+    if !matches!(
+        protocol,
+        *b"\xef\xef\xef\xef" | *b"\xee\xee\xee\xee" | *b"\xdd\xdd\xdd\xdd"
+    ) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid Telegram MTProto protocol tag",
+        ));
+    }
+
+    let dc = i16::from_le_bytes([decrypted[60], decrypted[61]]);
+    if dc == 0 || dc.unsigned_abs() > 5 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid Telegram DC in MTProto secret handshake",
+        ));
+    }
+
+    // Incoming client payload starts after the 64-byte handshake.
+    let mut consumed = [0u8; 64];
+    decrypt.apply_keystream(&mut consumed);
+
+    let mut reversed = prekey_iv.to_vec();
+    reversed.reverse();
+
+    let mut enc_hasher = Sha256::new();
+    enc_hasher.update(&reversed[..32]);
+    enc_hasher.update(secret);
+    let enc_key = enc_hasher.finalize();
+
+    let encrypt = make_cipher(&enc_key, &reversed[32..48])?;
+
+    Ok(ServerObfs {
+        parsed: ParsedHeader { protocol, dc },
+        decrypt,
+        encrypt,
+    })
 }
 
 pub fn parse_server_header(wire: [u8; 64]) -> io::Result<ServerObfs> {
