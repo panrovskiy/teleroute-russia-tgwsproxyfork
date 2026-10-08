@@ -58,7 +58,7 @@ path = "src/bin/call-relay.rs"
 [profile.release]
 lto = "thin"
 codegen-units = 1
-panic = "abort"
+panic = "unwind"
 strip = "symbols"
 
 [profile.release-with-debug]
