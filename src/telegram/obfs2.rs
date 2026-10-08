@@ -57,10 +57,10 @@ pub fn parse_secret_server_header(wire: [u8; 64], secret: &[u8; 16]) -> io::Resu
     handshake_cipher.apply_keystream(&mut decrypted);
 
     let protocol = <[u8; 4]>::try_from(&decrypted[56..60]).unwrap();
-    if !matches!(
-        protocol,
-        *b"\xef\xef\xef\xef" | *b"\xee\xee\xee\xee" | *b"\xdd\xdd\xdd\xdd"
-    ) {
+    if protocol != *b"\xef\xef\xef\xef"
+        && protocol != *b"\xee\xee\xee\xee"
+        && protocol != *b"\xdd\xdd\xdd\xdd"
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "invalid Telegram MTProto protocol tag",
