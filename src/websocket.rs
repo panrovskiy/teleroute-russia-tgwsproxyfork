@@ -3,7 +3,7 @@ use futures_util::{SinkExt, StreamExt};
 use ctr::cipher::StreamCipher;
 use std::{collections::HashMap, net::SocketAddr, sync::{atomic::Ordering, Arc}, time::Duration};
 use tokio::sync::Mutex;
-use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream, time::timeout};
+use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{lookup_host, TcpStream}, time::timeout};
 use tokio_tungstenite::{client_async_tls_with_config, tungstenite::{client::IntoClientRequest, http::HeaderValue, Message}};
 use tracing::{info, warn};
 
@@ -124,7 +124,7 @@ impl WebSocketTransport {
     async fn connect(
         &self,
         url: &str,
-        dc_id: u16,
+        _dc_id: u16,
     ) -> Result<(
         tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>,
         tokio_tungstenite::tungstenite::handshake::client::Response,
@@ -135,18 +135,36 @@ impl WebSocketTransport {
             HeaderValue::from_static("binary"),
         );
 
-        let ip = dc::default_ipv4(dc_id)
-            .ok_or_else(|| tokio_tungstenite::tungstenite::Error::Io(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("no bootstrap IP for Telegram DC{dc_id}"),
-            )))?;
+        req.headers_mut().insert(
+            "Origin",
+            HeaderValue::from_static("https://web.telegram.org"),
+        );
+        req.headers_mut().insert(
+            "User-Agent",
+            HeaderValue::from_static(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+            ),
+        );
 
-        // Connect the TCP socket to the DC IP but keep the requested hostname
-        // in the request. tokio-tungstenite/rustls uses that hostname for TLS SNI.
-        let socket = TcpStream::connect(SocketAddr::new(ip, 443)).await?;
-        socket.set_nodelay(true)?;
+        // Resolve the actual WSS hostname, not the Telegram API/DC address.
+        // Keep the hostname in the request so rustls uses it for TLS SNI.
+        let mut ips = lookup_host((url_host(&req), 443)).await
+            .map_err(tokio_tungstenite::tungstenite::Error::Io)?;
+        let mut last_err = None;
 
-        client_async_tls_with_config(req, socket, None, None).await
+        while let Some(addr) = ips.next() {
+            match TcpStream::connect(addr).await {
+                Ok(socket) => {
+                    socket.set_nodelay(true)?;
+                    return client_async_tls_with_config(req.clone(), socket, None, None).await;
+                }
+                Err(e) => last_err = Some(e),
+            }
+        }
+
+        Err(tokio_tungstenite::tungstenite::Error::Io(last_err.unwrap_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, "WSS hostname has no addresses")
+        })))
     }
 
     fn endpoints(&self, dc_id: u16) -> Vec<String> {
@@ -222,6 +240,10 @@ impl WebSocketTransport {
     }
 }
 
+fn url_host(req: &tokio_tungstenite::tungstenite::handshake::client::Request) -> String {
+    req.uri().host().unwrap_or_default().to_string()
+}
+
 fn target_from_header(_header: &[u8; 64], dc_id: u16) -> String {
     dc::default_ipv4(dc_id)
         .map(|ip| format!("{ip}:443"))
@@ -282,24 +304,44 @@ pub async fn probe(config: &crate::config::EndpointConfig) -> bool {
         HeaderValue::from_static("binary"),
     );
 
-    let ip = match dc::default_ipv4(2) {
-        Some(v) => v,
-        None => return false,
-    };
-
-    let socket = match timeout(
+    let mut ips = match timeout(
         Duration::from_millis(2500),
-        TcpStream::connect(SocketAddr::new(ip, 443)),
+        lookup_host((url_host(&req), 443)),
     ).await {
-        Ok(Ok(s)) => s,
+        Ok(Ok(v)) => v,
         _ => return false,
     };
 
-    matches!(
-        timeout(
+    while let Some(addr) = ips.next() {
+        let socket = match timeout(
             Duration::from_millis(2500),
-            client_async_tls_with_config(req, socket, None, None),
-        ).await,
-        Ok(Ok(_))
-    )
+            TcpStream::connect(addr),
+        ).await {
+            Ok(Ok(s)) => s,
+            _ => continue,
+        };
+
+        req.headers_mut().insert(
+            "Origin",
+            HeaderValue::from_static("https://web.telegram.org"),
+        );
+        req.headers_mut().insert(
+            "User-Agent",
+            HeaderValue::from_static(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+            ),
+        );
+
+        if matches!(
+            timeout(
+                Duration::from_millis(2500),
+                client_async_tls_with_config(req.clone(), socket, None, None),
+            ).await,
+            Ok(Ok(_))
+        ) {
+            return true;
+        }
+    }
+
+    false
 }
