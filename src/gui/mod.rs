@@ -17,13 +17,14 @@ pub fn run(ctx: AppContext, start_hidden: bool) -> anyhow::Result<()> {
 }
 
 #[derive(Clone, Copy)]
-enum TrayAction { Open, Test }
+enum TrayAction { Open, Test, ConfigureTelegram }
 
 struct TrayState {
     _tray: tray_icon::TrayIcon,
     connect: MenuItem,
     disconnect: MenuItem,
     open: MenuItem,
+    configure_telegram: MenuItem,
     test: MenuItem,
     exit: MenuItem,
     rx: std::sync::mpsc::Receiver<TrayAction>,
@@ -88,6 +89,22 @@ impl TeleRouteApp {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                     self.page = Page::Diagnostics;
                     self.start_diagnostics();
+                }
+                TrayAction::ConfigureTelegram => {
+                    let cfg = self.ctx.config.read().clone();
+                    let host = match cfg.proxy.bind.as_str() {
+                        "0.0.0.0" | "::" | "[::]" => "127.0.0.1".to_owned(),
+                        other => other.to_owned(),
+                    };
+                    let port = cfg.proxy.port;
+                    self.ctx.spawn(async move {
+                        let _ = tokio::task::spawn_blocking(move || {
+                            #[cfg(windows)]
+                            {
+                                let _ = crate::platform::windows::open_telegram_socks_proxy(&host, port);
+                            }
+                        }).await;
+                    });
                 }
             }
         }
@@ -300,6 +317,25 @@ impl TeleRouteApp {
     fn settings_page(&mut self, ui: &mut egui::Ui) {
         ui.heading("Settings"); let mut cfg = self.ctx.config.write();
         ui.collapsing("General", |ui| { ui.checkbox(&mut cfg.autostart.start_with_windows,"Start with Windows"); ui.checkbox(&mut cfg.autostart.start_connected,"Start connected"); ui.checkbox(&mut cfg.autostart.start_minimized,"Start minimized"); ui.checkbox(&mut cfg.autostart.minimize_to_tray,"Minimize to tray"); });
+        ui.collapsing("Telegram", |ui| {
+            ui.checkbox(&mut cfg.telegram.auto_configure, "Automatically configure local SOCKS5 once");
+            if let Some(proxy) = &cfg.telegram.configured_proxy {
+                ui.label(format!("Configured by TeleRoute: {proxy}"));
+            } else {
+                ui.label("Telegram proxy has not been configured by TeleRoute yet.");
+            }
+            if ui.button("Configure Telegram now").clicked() {
+                let host = match cfg.proxy.bind.as_str() {
+                    "0.0.0.0" | "::" | "[::]" => "127.0.0.1",
+                    other => other,
+                };
+                #[cfg(windows)]
+                {
+                    let _ = crate::platform::windows::open_telegram_socks_proxy(host, cfg.proxy.port);
+                    cfg.telegram.configured_proxy = Some(format!("{host}:{}", cfg.proxy.port));
+                }
+            }
+        });
         ui.collapsing("Proxy", |ui| { ui.horizontal(|ui| { ui.label("Host"); ui.add_sized([ui.available_width().min(360.0), 28.0], egui::TextEdit::singleline(&mut cfg.proxy.bind)); }); ui.add(egui::Slider::new(&mut cfg.proxy.port, 1..=65535).text("Port")); });
         ui.collapsing("MTProto", |ui| {
             ui.label("MTProto mode does not provide Telegram Calls.");
@@ -337,14 +373,16 @@ fn build_tray(ctx: AppContext, egui_ctx: egui::Context) -> anyhow::Result<TraySt
     let connect = MenuItem::new("Connect", true, None);
     let disconnect = MenuItem::new("Disconnect", true, None);
     let open = MenuItem::new("Open", true, None);
+    let configure_telegram = MenuItem::new("Configure Telegram", true, None);
     let test = MenuItem::new("Test", true, None);
     let exit = MenuItem::new("Exit", true, None);
-    menu.append_items(&[&connect, &disconnect, &open, &test, &exit])?;
+    menu.append_items(&[&connect, &disconnect, &open, &configure_telegram, &test, &exit])?;
 
     let (tx, rx) = std::sync::mpsc::channel::<TrayAction>();
     let connect_id = connect.id().clone();
     let disconnect_id = disconnect.id().clone();
     let open_id = open.id().clone();
+    let configure_telegram_id = configure_telegram.id().clone();
     let test_id = test.id().clone();
     let exit_id = exit.id().clone();
 
@@ -355,6 +393,9 @@ fn build_tray(ctx: AppContext, egui_ctx: egui::Context) -> anyhow::Result<TraySt
             ctx.disconnect();
         } else if event.id() == &open_id {
             let _ = tx.send(TrayAction::Open);
+            egui_ctx.request_repaint();
+        } else if event.id() == &configure_telegram_id {
+            let _ = tx.send(TrayAction::ConfigureTelegram);
             egui_ctx.request_repaint();
         } else if event.id() == &test_id {
             let _ = tx.send(TrayAction::Test);
@@ -381,6 +422,7 @@ fn build_tray(ctx: AppContext, egui_ctx: egui::Context) -> anyhow::Result<TraySt
         connect,
         disconnect,
         open,
+        configure_telegram,
         test,
         exit,
         rx,
