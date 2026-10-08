@@ -136,10 +136,12 @@ pub struct TelegramIntegrationConfig {
     pub auto_configure: bool,
     #[serde(default)]
     pub configured_proxy: Option<String>,
+    #[serde(default)]
+    pub configured_mtproto: Option<String>,
 }
 impl Default for TelegramIntegrationConfig {
     fn default() -> Self {
-        Self { auto_configure: true, configured_proxy: None }
+        Self { auto_configure: true, configured_proxy: None, configured_mtproto: None }
     }
 }
 fn default_true() -> bool { true }
@@ -192,6 +194,8 @@ mod tests {
         let decoded: AppConfig = toml::from_str(&toml::to_string(&cfg).unwrap()).unwrap();
         assert_eq!(decoded.proxy.port, 1080);
         assert!(decoded.telegram.auto_configure);
+        assert!(decoded.telegram.configured_proxy.is_none());
+        assert!(decoded.telegram.configured_mtproto.is_none());
         assert_eq!(decoded.tun.mtu, 1280);
         assert!(!decoded.tun.telegram_udp_cidrs.is_empty());
     }
