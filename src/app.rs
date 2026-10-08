@@ -121,10 +121,20 @@ impl AppContext {
                 }
             }
 
-            proxy.warmup_wss_pool().await;
-            telemetry.write().status = ConnectionStatus::Connected;
-            telemetry.write().transport = if config.routing.prefer_wss { "WebSocket / fallback TCP".into() } else { "TCP".into() };
-            telemetry.write().dc = "automatic".into();
+            // The SOCKS5 listener is usable immediately. WSS pool warm-up is
+            // deliberately moved off the critical connection path so Connect
+            // does not appear frozen while remote DCs are probed.
+            let warmup_proxy = proxy.clone();
+            tokio::spawn(async move {
+                warmup_proxy.warmup_wss_pool().await;
+            });
+
+            {
+                let mut t = telemetry.write();
+                t.status = ConnectionStatus::Connected;
+                t.transport = if config.routing.prefer_wss { "WebSocket / fallback TCP".into() } else { "TCP".into() };
+                t.dc = "automatic".into();
+            }
 
             if let Err(e) = proxy.run_on_listener(listener, token.clone()).await {
                 telemetry.write().status = ConnectionStatus::Error;
