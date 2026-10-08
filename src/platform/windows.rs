@@ -92,6 +92,30 @@ pub fn open_telegram_socks_proxy(host: &str, port: u16) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub fn open_telegram_mtproto_proxy(server: &str, port: u16, secret: &str) -> anyhow::Result<()> {
+    let uri = format!("tg://proxy?server={server}&port={port}&secret={secret}");
+
+    let operation = wide_str("open");
+    let target = wide_str(&uri);
+
+    let result = unsafe {
+        ShellExecuteW(
+            0 as HWND,
+            operation.as_ptr(),
+            target.as_ptr(),
+            ptr::null(),
+            ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+
+    if (result as isize) <= 32 {
+        anyhow::bail!("Telegram MTProto URI handler is unavailable (ShellExecuteW code {})", result as isize);
+    }
+
+    Ok(())
+}
+
 mod embedded {
     include!(concat!(env!("OUT_DIR"), "/wintun_embedded.rs"));
 }
