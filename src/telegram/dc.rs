@@ -17,10 +17,10 @@ pub fn name(id: u16) -> &'static str {
 pub fn default_ipv4(id: u16) -> Option<IpAddr> {
     let ip = match id {
         1 => "149.154.175.50",
-        2 => "149.154.167.50",
+        2 => "149.154.167.51",
         3 => "149.154.175.100",
-        4 => "149.154.167.92",
-        5 => "91.108.56.100",
+        4 => "149.154.167.91",
+        5 => "149.154.171.5",
         _ => return None,
     };
     Some(ip.parse().unwrap())
@@ -30,11 +30,14 @@ pub fn classify_ip(ip: IpAddr) -> Option<u16> {
     match ip {
         IpAddr::V4(v4) => {
             let o = v4.octets();
-            if o[0] == 149 && o[1] == 154 {
-                if o[2] == 167 { return Some(2); }
-                if o[2] == 175 { return Some(1); }
+            match o {
+                [149, 154, 167, 51] => Some(2),
+                [149, 154, 175, 50] => Some(1),
+                [149, 154, 175, 100] => Some(3),
+                [149, 154, 167, 91] => Some(4),
+                [149, 154, 171, 5] => Some(5),
+                _ => None,
             }
-            if o[0] == 91 && o[1] == 108 { return Some(5); }
             None
         }
         IpAddr::V6(_) => None,
