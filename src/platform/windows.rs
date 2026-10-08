@@ -86,55 +86,42 @@ pub fn relaunch_as_admin_and_connect() -> anyhow::Result<()> {
 
 /// Ask Telegram Desktop to add the local SOCKS5 proxy through its registered URI handler.
 /// ShellExecuteW uses the Windows shell association for tg:// instead of launching Explorer.
+fn shell_open_uri_detached(uri: String) {
+    std::thread::spawn(move || {
+        // Give the main GUI/network thread time to finish Connect. The Telegram
+        // protocol handler must never be part of the proxy startup critical path.
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        let operation = wide_str("open");
+        let target = wide_str(&uri);
+
+        let result = unsafe {
+            ShellExecuteW(
+                0 as HWND,
+                operation.as_ptr(),
+                target.as_ptr(),
+                ptr::null(),
+                ptr::null(),
+                SW_SHOWNORMAL,
+            )
+        };
+
+        if (result as isize) <= 32 {
+            tracing::warn!(code = result as isize, %uri, "Windows failed to open Telegram URI");
+        }
+    });
+}
+
 pub fn open_telegram_socks_proxy(host: &str, port: u16) -> anyhow::Result<()> {
     let advertised_host = match host {
         "0.0.0.0" | "::" | "[::]" => "127.0.0.1",
         other => other,
     };
-    let uri = format!("tg://socks?server={advertised_host}&port={port}");
-
-    let operation = wide_str("open");
-    let target = wide_str(&uri);
-
-    let result = unsafe {
-        ShellExecuteW(
-            0 as HWND,
-            operation.as_ptr(),
-            target.as_ptr(),
-            ptr::null(),
-            ptr::null(),
-            SW_SHOWNORMAL,
-        )
-    };
-
-    if (result as isize) <= 32 {
-        anyhow::bail!("Telegram tg:// handler is unavailable (ShellExecuteW code {})", result as isize);
-    }
-
+    shell_open_uri_detached(format!("tg://socks?server={advertised_host}&port={port}"));
     Ok(())
 }
 
 pub fn open_telegram_mtproto_proxy(server: &str, port: u16, secret: &str) -> anyhow::Result<()> {
-    let uri = format!("tg://proxy?server={server}&port={port}&secret={secret}");
-
-    let operation = wide_str("open");
-    let target = wide_str(&uri);
-
-    let result = unsafe {
-        ShellExecuteW(
-            0 as HWND,
-            operation.as_ptr(),
-            target.as_ptr(),
-            ptr::null(),
-            ptr::null(),
-            SW_SHOWNORMAL,
-        )
-    };
-
-    if (result as isize) <= 32 {
-        anyhow::bail!("Telegram MTProto URI handler is unavailable (ShellExecuteW code {})", result as isize);
-    }
-
+    shell_open_uri_detached(format!("tg://proxy?server={server}&port={port}&secret={secret}"));
     Ok(())
 }
 
