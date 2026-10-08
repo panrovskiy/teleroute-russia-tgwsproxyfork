@@ -26,12 +26,22 @@ struct TeleRouteApp {
     diagnostics_rx: Option<std::sync::mpsc::Receiver<crate::diagnostics::DiagnosticReport>>,
     logs_cache: String,
     tray: Option<TrayState>,
+    force_exit: bool,
 }
 
 impl TeleRouteApp {
     fn new(_cc: &eframe::CreationContext<'_>, ctx: AppContext) -> anyhow::Result<Self> {
         let tray = build_tray().ok();
-        Ok(Self { ctx, page: Page::Connection, last_refresh: Instant::now(), diagnostics: None, diagnostics_rx: None, logs_cache: String::new(), tray })
+        Ok(Self {
+            ctx,
+            page: Page::Connection,
+            last_refresh: Instant::now(),
+            diagnostics: None,
+            diagnostics_rx: None,
+            logs_cache: String::new(),
+            tray,
+            force_exit: false,
+        })
     }
 
     fn status_text(&self) -> &'static str {
@@ -55,7 +65,12 @@ impl TeleRouteApp {
                     else if self.tray.as_ref().map(|t| event.id() == &t.disconnect.id()).unwrap_or(false) { self.ctx.disconnect(); }
                     else if self.tray.as_ref().map(|t| event.id() == &t.open.id()).unwrap_or(false) { ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true)); }
                     else if self.tray.as_ref().map(|t| event.id() == &t.test.id()).unwrap_or(false) { self.page = Page::Diagnostics; self.start_diagnostics(); }
-                    else if self.tray.as_ref().map(|t| event.id() == &t.exit.id()).unwrap_or(false) { self.ctx.disconnect(); ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
+                    else if self.tray.as_ref().map(|t| event.id() == &t.exit.id()).unwrap_or(false) {
+                        self.force_exit = true;
+                        self.ctx.disconnect();
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
                 }
                 Err(_) => break,
             }
@@ -87,11 +102,17 @@ impl eframe::App for TeleRouteApp {
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }
         if ctx.input(|i| i.viewport().close_requested()) {
+            if self.force_exit {
+                self.ctx.disconnect();
+                return;
+            }
+
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             if self.ctx.config.read().autostart.minimize_to_tray {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             } else {
                 self.ctx.disconnect();
+                self.force_exit = true;
                 return;
             }
         }
