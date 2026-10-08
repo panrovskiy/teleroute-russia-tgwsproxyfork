@@ -262,9 +262,7 @@ pub fn run() -> anyhow::Result<()> {
 
     let args: Vec<String> = std::env::args().collect();
     let autostart = args.iter().any(|a| a == "--autostart");
-    let elevated_connect = args.iter().any(|a| a == "--elevated-connect");
-
-    if (autostart && config.autostart.start_connected) || elevated_connect {
+    if autostart && config.autostart.start_connected {
         ctx.connect();
     }
 
