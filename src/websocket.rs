@@ -1,7 +1,7 @@
 use crate::{config::AppConfig, statistics::Statistics, telegram::{dc, obfs2::{self, ClientObfs, ServerObfs}}};
 use futures_util::{SinkExt, StreamExt};
 use ctr::cipher::StreamCipher;
-use std::{collections::HashMap, sync::{atomic::Ordering, Arc}, time::Duration};
+use std::{collections::HashMap, net::SocketAddr, sync::{atomic::Ordering, Arc}, time::Duration};
 use tokio::sync::Mutex;
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{lookup_host, TcpStream}, time::timeout};
 use tokio_tungstenite::{client_async_tls_with_config, tungstenite::{client::IntoClientRequest, http::HeaderValue, Message}};
@@ -89,13 +89,15 @@ impl WebSocketTransport {
         // Race all configured WSS endpoints instead of trying them serially.
         // The first successful TLS/WebSocket handshake wins, reducing startup
         // latency significantly on networks where one endpoint is slow/blocked.
-        let endpoints = self.endpoints(dc_id);
+        let endpoints = self.endpoints(dc_id, media);
+        let target_ip = dc::default_ipv4(dc_id)
+            .ok_or_else(|| anyhow::anyhow!("no default Telegram DC address for DC{dc_id}"))?;
         let deadline = Duration::from_millis(self.config.timeouts.connect_ms);
         let mut attempts = futures_util::stream::FuturesUnordered::new();
 
         for url in endpoints {
             attempts.push(async {
-                let result = timeout(deadline, self.connect(&url, dc_id)).await;
+                let result = timeout(deadline, self.connect(&url, dc_id, target_ip)).await;
                 (url, result)
             });
         }
@@ -135,6 +137,7 @@ impl WebSocketTransport {
         &self,
         url: &str,
         _dc_id: u16,
+        target_ip: std::net::IpAddr,
     ) -> Result<(
         tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>,
         tokio_tungstenite::tungstenite::handshake::client::Response,
@@ -156,37 +159,39 @@ impl WebSocketTransport {
             ),
         );
 
-        // Resolve the actual WSS hostname, not the Telegram API/DC address.
-        // Keep the hostname in the request so rustls uses it for TLS SNI.
-        let mut ips = lookup_host((url_host(&req), 443)).await
-            .map_err(tokio_tungstenite::tungstenite::Error::Io)?;
-        let mut last_err = None;
-
-        while let Some(addr) = ips.next() {
-            match TcpStream::connect(addr).await {
-                Ok(socket) => {
-                    socket.set_nodelay(true)?;
-                    return client_async_tls_with_config(req.clone(), socket, None, None).await;
-                }
-                Err(e) => last_err = Some(e),
-            }
-        }
-
-        Err(tokio_tungstenite::tungstenite::Error::Io(last_err.unwrap_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::NotFound, "WSS hostname has no addresses")
-        })))
+        // Flowseal's bridge connects to the Telegram DC IP directly while
+        // retaining kwsN.web.telegram.org as Host/SNI.
+        let socket = TcpStream::connect(SocketAddr::new(target_ip, 443)).await?;
+        socket.set_nodelay(true)?;
+        client_async_tls_with_config(req, socket, None, None).await
     }
 
-    fn endpoints(&self, dc_id: u16) -> Vec<String> {
-        self.config
-            .websocket
-            .templates
-            .iter()
+    fn endpoints(&self, dc_id: u16, media: bool) -> Vec<String> {
+        let mut endpoints: Vec<String> = self.config.websocket.templates.iter()
             .map(|t| {
                 t.replace("{dc}", &dc_id.to_string())
                     .replace("{dc_name}", dc::name(dc_id))
             })
-            .collect()
+            .collect();
+
+        if endpoints.is_empty() {
+            endpoints = if media {
+                vec![
+                    format!("wss://kws{dc_id}-1.web.telegram.org/apiws"),
+                    format!("wss://kws{dc_id}.web.telegram.org/apiws"),
+                ]
+            } else {
+                vec![format!("wss://kws{dc_id}.web.telegram.org/apiws")]
+            };
+        }
+
+        if media {
+            endpoints.sort_by_key(|u| if u.contains("-1.web.telegram.org") { 0 } else { 1 });
+        } else {
+            endpoints.retain(|u| !u.contains("-1.web.telegram.org"));
+        }
+
+        endpoints
     }
 
     async fn pipe(
@@ -314,44 +319,35 @@ pub async fn probe(config: &crate::config::EndpointConfig) -> bool {
         HeaderValue::from_static("binary"),
     );
 
-    let mut ips = match timeout(
+    let target_ip = match dc::default_ipv4(2) {
+        Some(ip) => ip,
+        None => return false,
+    };
+
+    let socket = match timeout(
         Duration::from_millis(2500),
-        lookup_host((url_host(&req), 443)),
+        TcpStream::connect(SocketAddr::new(target_ip, 443)),
     ).await {
-        Ok(Ok(v)) => v,
+        Ok(Ok(s)) => s,
         _ => return false,
     };
 
-    while let Some(addr) = ips.next() {
-        let socket = match timeout(
+    req.headers_mut().insert(
+        "Origin",
+        HeaderValue::from_static("https://web.telegram.org"),
+    );
+    req.headers_mut().insert(
+        "User-Agent",
+        HeaderValue::from_static(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        ),
+    );
+
+    matches!(
+        timeout(
             Duration::from_millis(2500),
-            TcpStream::connect(addr),
-        ).await {
-            Ok(Ok(s)) => s,
-            _ => continue,
-        };
-
-        req.headers_mut().insert(
-            "Origin",
-            HeaderValue::from_static("https://web.telegram.org"),
-        );
-        req.headers_mut().insert(
-            "User-Agent",
-            HeaderValue::from_static(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-            ),
-        );
-
-        if matches!(
-            timeout(
-                Duration::from_millis(2500),
-                client_async_tls_with_config(req.clone(), socket, None, None),
-            ).await,
-            Ok(Ok(_))
-        ) {
-            return true;
-        }
-    }
-
-    false
+            client_async_tls_with_config(req, socket, None, None),
+        ).await,
+        Ok(Ok(_))
+    )
 }
