@@ -151,4 +151,25 @@ mod tests {
         assert_eq!(parsed.parsed.protocol, *b"\xee\xee\xee\xee");
         assert_eq!(parsed.parsed.dc, 2);
     }
+
+    #[test]
+    fn roundtrip_secret_header_parse() {
+        let secret = [0x11u8; 16];
+        let mut plain = filtered_random_header();
+        plain[56..60].copy_from_slice(b"\xee\xee\xee\xee");
+        plain[60..62].copy_from_slice(&(-2i16).to_le_bytes());
+
+        let mut hasher = Sha256::new();
+        hasher.update(&plain[8..40]);
+        hasher.update(&secret);
+        let key = hasher.finalize();
+
+        let mut cipher = make_cipher(&key, &plain[40..56]).unwrap();
+        let mut wire = plain;
+        cipher.apply_keystream(&mut wire);
+
+        let parsed = parse_secret_server_header(wire, &secret).unwrap();
+        assert_eq!(parsed.parsed.protocol, *b"\xee\xee\xee\xee");
+        assert_eq!(parsed.parsed.dc, -2);
+    }
 }
