@@ -63,13 +63,15 @@ impl TeleRouteApp {
                 Ok(event) => {
                     if self.tray.as_ref().map(|t| event.id() == &t.connect.id()).unwrap_or(false) { self.ctx.connect(); }
                     else if self.tray.as_ref().map(|t| event.id() == &t.disconnect.id()).unwrap_or(false) { self.ctx.disconnect(); }
-                    else if self.tray.as_ref().map(|t| event.id() == &t.open.id()).unwrap_or(false) { ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true)); }
+                    else if self.tray.as_ref().map(|t| event.id() == &t.open.id()).unwrap_or(false) {
+    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+}
                     else if self.tray.as_ref().map(|t| event.id() == &t.test.id()).unwrap_or(false) { self.page = Page::Diagnostics; self.start_diagnostics(); }
                     else if self.tray.as_ref().map(|t| event.id() == &t.exit.id()).unwrap_or(false) {
                         self.force_exit = true;
                         self.ctx.disconnect();
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        std::process::exit(0);
                     }
                 }
                 Err(_) => break,
@@ -285,8 +287,21 @@ impl TeleRouteApp {
         ui.heading("Settings"); let mut cfg = self.ctx.config.write();
         ui.collapsing("General", |ui| { ui.checkbox(&mut cfg.autostart.start_with_windows,"Start with Windows"); ui.checkbox(&mut cfg.autostart.start_connected,"Start connected"); ui.checkbox(&mut cfg.autostart.start_minimized,"Start minimized"); ui.checkbox(&mut cfg.autostart.minimize_to_tray,"Minimize to tray"); });
         ui.collapsing("Proxy", |ui| { ui.horizontal(|ui| { ui.label("Host"); ui.add_sized([ui.available_width().min(360.0), 28.0], egui::TextEdit::singleline(&mut cfg.proxy.bind)); }); ui.add(egui::Slider::new(&mut cfg.proxy.port, 1..=65535).text("Port")); });
+        ui.collapsing("MTProto", |ui| {
+            ui.label("MTProto mode does not provide Telegram Calls.");
+            ui.horizontal(|ui| {
+                ui.label("Server");
+                ui.add_sized([ui.available_width().min(360.0), 28.0], egui::TextEdit::singleline(&mut cfg.mtproto.server));
+            });
+            ui.add(egui::Slider::new(&mut cfg.mtproto.port, 1..=65535).text("Port"));
+            ui.horizontal(|ui| {
+                ui.label("Secret");
+                ui.add_sized([ui.available_width().min(360.0), 28.0], egui::TextEdit::singleline(&mut cfg.mtproto.secret));
+            });
+            ui.label("Example secret: 32 hexadecimal characters.");
+        });
         ui.collapsing("WebSocket", |ui| { ui.add(egui::Slider::new(&mut cfg.timeouts.connect_ms, 500..=15000).text("Connect timeout ms")); ui.add(egui::Slider::new(&mut cfg.timeouts.reconnect_ms, 100..=10000).text("Reconnect delay ms")); ui.label("Endpoint templates are configured in config.toml."); });
-        ui.collapsing("Routing", |ui| { for mode in [Mode::Proxy,Mode::Calls,Mode::Full] { ui.radio_value(&mut cfg.routing.mode, mode, format!("{mode:?}")); } ui.checkbox(&mut cfg.routing.telegram_only,"Telegram-only UDP routing"); ui.checkbox(&mut cfg.routing.direct_udp_fallback,"Direct UDP fallback"); ui.checkbox(&mut cfg.routing.relay_udp_fallback,"QUIC relay fallback"); ui.checkbox(&mut cfg.routing.route_all_traffic,"Route all traffic (requires a future full TCP userspace stack; disabled now)"); });
+        ui.collapsing("Routing", |ui| { for mode in [Mode::Proxy,Mode::Calls,Mode::Full,Mode::Mtproto] { ui.radio_value(&mut cfg.routing.mode, mode, format!("{mode:?}")); } ui.checkbox(&mut cfg.routing.telegram_only,"Telegram-only UDP routing"); ui.checkbox(&mut cfg.routing.direct_udp_fallback,"Direct UDP fallback"); ui.checkbox(&mut cfg.routing.relay_udp_fallback,"QUIC relay fallback"); ui.checkbox(&mut cfg.routing.route_all_traffic,"Route all traffic (requires a future full TCP userspace stack; disabled now)"); });
         ui.collapsing("TUN", |ui| { ui.checkbox(&mut cfg.tun.enabled,"Enable TUN"); ui.add(egui::Slider::new(&mut cfg.tun.mtu, 576..=1500).text("MTU")); ui.add_sized([ui.available_width().min(360.0), 28.0], egui::TextEdit::singleline(&mut cfg.tun.adapter_name)); ui.label(format!("Telegram UDP CIDRs: {}",cfg.tun.telegram_udp_cidrs.join(", "))); });
         ui.collapsing("Logging", |ui| { ui.add_sized([ui.available_width().min(360.0), 28.0], egui::TextEdit::singleline(&mut cfg.logging.level)); ui.add(egui::Slider::new(&mut cfg.logging.keep_files,1..=20).text("Retained files")); });
         if ui.button("Save settings").clicked() { let _ = self.ctx.save_config(); }
