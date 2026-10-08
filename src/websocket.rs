@@ -1,7 +1,7 @@
 use crate::{config::AppConfig, statistics::Statistics, telegram::{dc, obfs2::{self, ClientObfs, ServerObfs}}};
 use futures_util::{SinkExt, StreamExt};
 use ctr::cipher::StreamCipher;
-use std::{collections::HashMap, net::SocketAddr, sync::{atomic::Ordering, Arc}, time::Duration};
+use std::{collections::HashMap, sync::{atomic::Ordering, Arc}, time::Duration};
 use tokio::sync::Mutex;
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{lookup_host, TcpStream}, time::timeout};
 use tokio_tungstenite::{client_async_tls_with_config, tungstenite::{client::IntoClientRequest, http::HeaderValue, Message}};
