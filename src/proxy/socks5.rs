@@ -78,10 +78,14 @@ impl Socks5Server {
         // We therefore inspect a short prefix after SOCKS CONNECT. A valid
         // 64-byte MTProto init goes through WSS; everything else is passed
         // through unchanged to the original SOCKS destination.
-        let (prefix, telegram_handshake) = if self.config.routing.prefer_wss && port == 443 {
+        let probe_telegram = self.config.routing.prefer_wss
+            && port == 443
+            && looks_like_telegram_destination(&host, &self.config.tun.telegram_udp_cidrs);
+
+        let (prefix, telegram_handshake) = if probe_telegram {
             let prefix = read_probe_prefix(
                 &mut stream,
-                Duration::from_millis(self.config.timeouts.socks_handshake_ms.min(750)),
+                Duration::from_millis(self.config.timeouts.socks_handshake_ms.min(350)),
             )
             .await?;
 
@@ -307,6 +311,19 @@ pub async fn send_failure(stream: &mut TcpStream, code: u8) -> anyhow::Result<()
         .write_all(&[5, code, 0, 1, 0, 0, 0, 0, 0, 0])
         .await?;
     Ok(())
+}
+
+fn looks_like_telegram_destination(host: &str, cidrs: &[String]) -> bool {
+    let lower = host.to_ascii_lowercase();
+    if lower.ends_with(".telegram.org")
+        || lower.ends_with(".t.me")
+        || lower.contains("web.telegram.org")
+    {
+        return true;
+    }
+
+    let Ok(ip) = host.parse::<IpAddr>() else { return false; };
+    cidrs.iter().any(|text| text.parse::<ipnet::IpNet>().map(|net| net.contains(&ip)).unwrap_or(false))
 }
 
 async fn resolve_first(host: &str, port: u16) -> anyhow::Result<IpAddr> {
