@@ -42,11 +42,38 @@ impl Default for MtprotoConfig {
     }
 }
 
+fn default_cfproxy_domains() -> Vec<String> {
+    vec![
+        "pclead.co.uk".into(),
+        "offshor.co.uk".into(),
+        "cakeisalie.co.uk".into(),
+        "noskomnadzor.co.uk".into(),
+        "lovetrue.co.uk".into(),
+        "sorokdva.co.uk".into(),
+        "pyatdesyatdva.co.uk".into(),
+        "kartoshka.co.uk".into(),
+        "sorokodin.co.uk".into(),
+        "pyatdesyatodin.co.uk".into(),
+        "notelega.co.uk".into(),
+        "ebally.co.uk".into(),
+        "nebally.co.uk".into(),
+        "havegreatday.co.uk".into(),
+        "pomogite.co.uk".into(),
+        "fixtelega.co.uk".into(),
+        "sadnews.co.uk".into(),
+        "onedaychamp.co.uk".into(),
+        "stopblocking.co.uk".into(),
+        "nothingthere.co.uk".into(),
+    ]
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EndpointConfig {
     pub templates: Vec<String>,
     pub path: String,
     pub pool_size: usize,
+    #[serde(default = "default_cfproxy_domains")]
+    pub fallback_domains: Vec<String>,
 }
 impl Default for EndpointConfig {
     fn default() -> Self {
@@ -57,6 +84,7 @@ impl Default for EndpointConfig {
             ],
             path: "/apiws".into(),
             pool_size: 1,
+            fallback_domains: default_cfproxy_domains(),
         }
     }
 }
@@ -178,8 +206,12 @@ impl Default for TelegramIntegrationConfig {
     }
 }
 fn default_true() -> bool { true }
+const CURRENT_CONFIG_VERSION: u32 = 2;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
+    #[serde(default)]
+    pub schema_version: u32,
     #[serde(default)]
     pub telegram: TelegramIntegrationConfig,
     pub proxy: ProxyConfig,
@@ -197,6 +229,7 @@ pub struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
+            schema_version: CURRENT_CONFIG_VERSION,
             telegram: TelegramIntegrationConfig::default(), proxy: ProxyConfig::default(), mtproto: MtprotoConfig::default(), websocket: EndpointConfig::default(), timeouts: Timeouts::default(), tun: TunConfig::default(),
             relay: RelayConfig::default(), routing: RoutingConfig::default(), logging: LoggingConfig::default(), autostart: AutostartConfig::default(), log_diagnostics: true,
         }
@@ -206,10 +239,34 @@ impl AppConfig {
     pub fn data_dir() -> PathBuf { ProjectDirs::from("org", "TeleRoute", "TeleRoute").map(|p| p.data_dir().to_path_buf()).unwrap_or_else(|| PathBuf::from("data")) }
     pub fn config_path() -> PathBuf { Self::data_dir().join("config.toml") }
     pub fn logs_dir() -> PathBuf { Self::data_dir().join("logs") }
+    fn migrate_legacy_settings(&mut self) -> bool {
+        if self.schema_version >= CURRENT_CONFIG_VERSION {
+            return false;
+        }
+
+        // Older builds persisted the SOCKS5 frontend and a stale proxy-link
+        // fingerprint. Migrate once to MTProto+WSS, then honor future user choices.
+        self.telegram.frontend = TelegramFrontend::MtprotoWs;
+        self.telegram.configured_proxy = None;
+        self.telegram.configured_mtproto = None;
+        self.tun.enabled = false;
+        self.schema_version = CURRENT_CONFIG_VERSION;
+        true
+    }
+
     pub fn load_or_default() -> anyhow::Result<Self> {
         let path = Self::config_path();
-        if !path.exists() { let cfg = Self::default(); cfg.save()?; return Ok(cfg); }
-        Ok(toml::from_str(&fs::read_to_string(path)?)?)
+        if !path.exists() {
+            let cfg = Self::default();
+            cfg.save()?;
+            return Ok(cfg);
+        }
+
+        let mut cfg: Self = toml::from_str(&fs::read_to_string(&path)?)?;
+        if cfg.migrate_legacy_settings() {
+            cfg.save()?;
+        }
+        Ok(cfg)
     }
     pub fn save(&self) -> anyhow::Result<()> {
         fs::create_dir_all(Self::data_dir())?;
@@ -226,11 +283,31 @@ mod tests {
         let cfg = AppConfig::default();
         let decoded: AppConfig = toml::from_str(&toml::to_string(&cfg).unwrap()).unwrap();
         assert_eq!(decoded.proxy.port, 1080);
+        assert_eq!(decoded.schema_version, CURRENT_CONFIG_VERSION);
+        assert_eq!(decoded.telegram.frontend, TelegramFrontend::MtprotoWs);
+        assert!(!decoded.websocket.fallback_domains.is_empty());
         assert!(decoded.telegram.auto_configure);
         assert!(decoded.telegram.configured_proxy.is_none());
         assert!(decoded.telegram.configured_mtproto.is_none());
         assert_eq!(decoded.tun.mtu, 1280);
         assert!(!decoded.tun.telegram_udp_cidrs.is_empty());
+    }
+
+    #[test] fn legacy_settings_migrate_to_mtproto_frontend() {
+        let mut cfg = AppConfig::default();
+        cfg.schema_version = 0;
+        cfg.telegram.frontend = TelegramFrontend::Socks5;
+        cfg.telegram.configured_proxy = Some("127.0.0.1:1080".into());
+        cfg.telegram.configured_mtproto = Some("stale".into());
+        cfg.tun.enabled = true;
+
+        assert!(cfg.migrate_legacy_settings());
+        assert_eq!(cfg.schema_version, CURRENT_CONFIG_VERSION);
+        assert_eq!(cfg.telegram.frontend, TelegramFrontend::MtprotoWs);
+        assert!(cfg.telegram.configured_proxy.is_none());
+        assert!(cfg.telegram.configured_mtproto.is_none());
+        assert!(!cfg.tun.enabled);
+        assert!(!cfg.migrate_legacy_settings());
     }
 
     #[test] fn legacy_config_without_mtproto_still_loads() {

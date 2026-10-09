@@ -53,7 +53,7 @@ pub async fn run_full(config: &AppConfig, _stats: Arc<Statistics>, tun_active: b
         _ => "FAILED",
     };
 
-    let ws = if crate::websocket::probe(&config.websocket).await {
+    let ws = if crate::websocket::probe(config).await {
         "OK"
     } else {
         "FAILED"

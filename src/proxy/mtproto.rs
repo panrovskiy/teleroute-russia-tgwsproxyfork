@@ -56,7 +56,6 @@ impl MtprotoServer {
 
                     tokio::spawn(async move {
                         this.stats.connections.fetch_add(1, Ordering::Relaxed);
-                        this.stats.active_connections.fetch_add(1, Ordering::Relaxed);
 
                         let result = AssertUnwindSafe(this.handle(stream))
                             .catch_unwind()
@@ -68,7 +67,6 @@ impl MtprotoServer {
                             Err(panic) => error!(%peer, ?panic, "MTProto client handler panicked"),
                         }
 
-                        this.stats.active_connections.fetch_sub(1, Ordering::Relaxed);
                     });
                 }
             }
@@ -89,15 +87,16 @@ impl MtprotoServer {
             }
         };
 
-        let transport = WebSocketTransport::with_pool(
+        self.stats.active_connections.fetch_add(1, Ordering::Relaxed);
+        let result = WebSocketTransport::with_pool(
             self.config.clone(),
             self.stats.clone(),
             self.ws_pool.clone(),
-        );
-
-        transport
-            .bridge(&mut stream, header, client_obfs)
-            .await
+        )
+        .bridge(&mut stream, header, client_obfs)
+        .await;
+        self.stats.active_connections.fetch_sub(1, Ordering::Relaxed);
+        result
     }
 }
 

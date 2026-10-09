@@ -256,7 +256,14 @@ impl TeleRouteApp {
         let s = self.ctx.snapshot();
         let cfg = self.ctx.config.read().clone();
 
-        let route_transport = s.current_transport.to_string();
+        let has_payload = s.bytes_up > 0 || s.bytes_down > 0;
+        let route_transport = if s.current_transport != "—" {
+            s.current_transport.to_string()
+        } else if t.status == ConnectionStatus::Connected && !t.transport.is_empty() {
+            format!("{} · waiting for Telegram traffic", t.transport)
+        } else {
+            "—".into()
+        };
         let route_dc = s.current_dc
             .map(|v| v.to_string())
             .unwrap_or_else(|| t.dc.clone());
@@ -269,12 +276,13 @@ impl TeleRouteApp {
         ui.add_space(8.0);
 
         let (status_label, mut status_color) = match t.status {
-            ConnectionStatus::Connected => ("READY", egui::Color32::from_rgb(75, 190, 120)),
+            ConnectionStatus::Connected if has_payload => ("TRAFFIC ACTIVE", egui::Color32::from_rgb(75, 190, 120)),
+            ConnectionStatus::Connected => ("LISTENING", egui::Color32::from_rgb(230, 184, 92)),
             ConnectionStatus::Connecting => ("CONNECTING", egui::Color32::from_rgb(235, 180, 70)),
             ConnectionStatus::Error => ("ERROR", egui::Color32::from_rgb(225, 85, 85)),
             ConnectionStatus::Disconnected => ("DISCONNECTED", egui::Color32::from_rgb(145, 150, 160)),
         };
-        if t.status == ConnectionStatus::Connected {
+        if t.status == ConnectionStatus::Connected && has_payload {
             let phase = ui.ctx().input(|input| input.time) as f32;
             let pulse = (phase * 2.2).sin() * 0.5 + 0.5;
             status_color = egui::Color32::from_rgb(
@@ -392,13 +400,17 @@ impl TeleRouteApp {
 
         ui.horizontal_wrapped(|ui| {
             ui.label(egui::RichText::new("Telegram integration").strong());
-            if cfg.telegram.configured_proxy.is_some() {
+            let registered = match cfg.telegram.frontend {
+                TelegramFrontend::MtprotoWs => cfg.telegram.configured_mtproto.is_some(),
+                TelegramFrontend::Socks5 => cfg.telegram.configured_proxy.is_some(),
+            };
+            if registered {
                 ui.label(
-                    egui::RichText::new("SOCKS5 configured")
+                    egui::RichText::new("Telegram proxy link opened")
                         .color(egui::Color32::from_rgb(75, 190, 120)),
                 );
             } else {
-                ui.label("Not registered yet");
+                ui.label("Telegram proxy not configured yet");
             }
 
             if ui.button("Diagnostics").clicked() {
@@ -406,7 +418,14 @@ impl TeleRouteApp {
             }
         });
 
-        ui.small("WSS connects lazily when Telegram creates its real MTProto connection. Calls require the separate UDP/TUN path.");
+        if !has_payload && t.status == ConnectionStatus::Connected {
+            ui.colored_label(
+                egui::Color32::from_rgb(230, 184, 92),
+                "Local listener is open, but no Telegram payload has passed yet. Run Diagnostics and confirm MTProto is LISTENING and WebSocket is OK.",
+            );
+        } else {
+            ui.small("Traffic counters show Telegram data moving. Media/calls use the MTProto media WebSocket route; TUN is optional.");
+        }
     }
 
     fn diagnostics_page(&mut self, ui: &mut egui::Ui) {
