@@ -197,10 +197,13 @@ impl WebSocketTransport {
         let mut addresses: Vec<SocketAddr> = if let Some(ip) = target_ip {
             vec![SocketAddr::new(ip, 443)]
         } else {
-            {
-                let host = url_host(&req);
-                lookup_host((host.as_str(), 443)).await?.collect()
+            let host = url_host(&req);
+            let resolved = lookup_host((host.as_str(), 443)).await?;
+            let mut out = Vec::new();
+            for address in resolved {
+                out.push(address);
             }
+            out
         };
 
         let mut last_error = None;
