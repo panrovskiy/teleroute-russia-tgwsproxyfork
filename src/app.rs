@@ -67,7 +67,7 @@ impl AppContext {
                     return;
                 }
 
-                let proxy_id = format!("v3:{:{}:{}", server, config.mtproto.port, secret);
+                let proxy_id = format!("v3:{}:{}:{}", server, config.mtproto.port, secret);
 
                 if config.telegram.auto_configure
                     && config.telegram.configured_mtproto.as_deref() != Some(proxy_id.as_str())
@@ -130,7 +130,7 @@ impl AppContext {
                         let host = config.telegram.mtproto_bind.clone();
                         let port = config.telegram.mtproto_port;
                         let secret = config.telegram.mtproto_secret.clone();
-                        let proxy_id = format!("v3:{:{}:{}", host, port, secret);
+                        let proxy_id = format!("v3:{}:{}:{}", host, port, secret);
 
                         if config.telegram.auto_configure
                             && config.telegram.configured_mtproto.as_deref() != Some(proxy_id.as_str())
@@ -174,7 +174,7 @@ impl AppContext {
                             other => other,
                         };
                         let port = config.proxy.port;
-                        let proxy_id = format!("v3:{:{}", host, port);
+                        let proxy_id = format!("v3:{}:{}", host, port);
 
                         if config.telegram.auto_configure
                             && config.telegram.configured_proxy.as_deref() != Some(proxy_id.as_str())

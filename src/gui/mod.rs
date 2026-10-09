@@ -569,7 +569,7 @@ impl TeleRouteApp {
                     "0.0.0.0" | "::" | "[::]" => "127.0.0.1",
                     other => other,
                 };
-                cfg.telegram.configured_proxy = Some(format!("v3:{:{}", host, cfg.proxy.port));
+                cfg.telegram.configured_proxy = Some(format!("v3:{}:{}", host, cfg.proxy.port));
             }
             if ui.button("Forget SOCKS5 Telegram registration").clicked() {
                 cfg.telegram.configured_proxy = None;
@@ -580,7 +580,7 @@ impl TeleRouteApp {
             ));
             if ui.button("Mark current MTProto as already configured").clicked() {
                 cfg.telegram.configured_mtproto = Some(format!(
-                    "{}:{}:{}",
+                    "v3:{}:{}:{}",
                     cfg.mtproto.server.trim(),
                     cfg.mtproto.port,
                     cfg.mtproto.secret.trim()
