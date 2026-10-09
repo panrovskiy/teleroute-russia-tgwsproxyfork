@@ -324,6 +324,10 @@ impl AppContext {
 }
 
 pub fn run() -> anyhow::Result<()> {
+    // Use one explicit Rustls provider. Quinn enables ring, while Rustls defaults
+    // can also enable aws-lc-rs; leaving selection implicit can panic at WSS setup.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let config = AppConfig::load_or_default()?;
     logging::init(&config)?;
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().thread_name("tele-route").build()?;

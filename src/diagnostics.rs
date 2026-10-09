@@ -1,5 +1,6 @@
 use crate::{config::AppConfig, statistics::Statistics};
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use futures_util::FutureExt;
+use std::{net::SocketAddr, panic::AssertUnwindSafe, sync::Arc, time::Duration};
 use tokio::{net::{lookup_host, TcpStream, UdpSocket}, time::timeout};
 
 #[derive(Debug, Clone, Default)]
@@ -54,15 +55,29 @@ pub async fn run_full(config: &AppConfig, _stats: Arc<Statistics>, tun_active: b
         _ => "FAILED",
     };
 
-    let ws = if crate::websocket::probe(config).await {
-        "OK"
-    } else {
-        "FAILED"
+    // A failed TLS provider selection or another unexpected WSS panic must not
+    // discard independent SOCKS5, MTProto, DNS, TCP and UDP results.
+    let ws = match AssertUnwindSafe(crate::websocket::probe(config))
+        .catch_unwind()
+        .await
+    {
+        Ok(true) => "OK",
+        Ok(false) => "FAILED",
+        Err(_) => {
+            tracing::error!("WebSocket diagnostic panicked");
+            "FAILED (internal error)"
+        }
     };
-    let media_ws = if crate::websocket::probe_media(config).await {
-        "OK"
-    } else {
-        "FAILED"
+    let media_ws = match AssertUnwindSafe(crate::websocket::probe_media(config))
+        .catch_unwind()
+        .await
+    {
+        Ok(true) => "OK",
+        Ok(false) => "FAILED",
+        Err(_) => {
+            tracing::error!("Media WebSocket diagnostic panicked");
+            "FAILED (internal error)"
+        }
     };
 
     let udp = match UdpSocket::bind("0.0.0.0:0").await {

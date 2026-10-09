@@ -3,6 +3,9 @@ use tele_route::{calls::run_relay_server, statistics::Statistics};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Use the same TLS provider as the main TeleRoute binary.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let mut bind: SocketAddr = "0.0.0.0:4433".parse()?;
     let mut cert_path: Option<String> = None;
     let mut key_path: Option<String> = None;
