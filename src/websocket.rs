@@ -32,13 +32,16 @@ impl WebSocketPool {
                     Arc::new(Statistics::default()),
                     self.clone(),
                 );
-                let Some(url) = transport.endpoints(dc).first().cloned() else {
+                let Some(target_ip) = dc::default_ipv4(dc) else {
+                    break;
+                };
+                let Some(url) = transport.endpoints(dc, false).first().cloned() else {
                     break;
                 };
 
                 match timeout(
                     Duration::from_millis(config.timeouts.connect_ms),
-                    transport.connect(&url, dc),
+                    transport.connect(&url, dc, target_ip),
                 ).await {
                     Ok(Ok((ws, _))) => self.inner.lock().await.entry(dc).or_default().push(ws),
                     _ => break,

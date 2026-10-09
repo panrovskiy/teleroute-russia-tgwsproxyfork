@@ -38,7 +38,6 @@ pub fn classify_ip(ip: IpAddr) -> Option<u16> {
                 [149, 154, 171, 5] => Some(5),
                 _ => None,
             }
-            None
         }
         IpAddr::V6(_) => None,
     }
