@@ -32,10 +32,10 @@ impl WebSocketPool {
                     Arc::new(Statistics::default()),
                     self.clone(),
                 );
-                let Some(url) = transport.endpoints(dc, false).first().cloned() else {
+                let Some(url) = transport.endpoints(dc, false, false).first().cloned() else {
                     break;
                 };
-                let target_ip = target_ip_for_url(&url, dc);
+                let target_ip = target_ip_for_url(&url, dc, false);
 
                 match timeout(
                     Duration::from_millis(config.timeouts.connect_ms),
@@ -73,24 +73,35 @@ impl WebSocketTransport {
         initial_header: [u8; 64],
         client_obfs: ServerObfs,
     ) -> anyhow::Result<()> {
-        let dc_id = client_obfs.parsed.dc.unsigned_abs() as u16;
-        let media = client_obfs.parsed.dc < 0;
+        let raw_dc = client_obfs.parsed.dc;
+        let media = raw_dc < 0;
+        let encoded_dc = raw_dc.unsigned_abs() as u16;
+        let is_test_dc = (10_001u16..=10_005u16).contains(&encoded_dc);
+        let mut dc_id = if is_test_dc { encoded_dc - 10_000 } else { encoded_dc };
+        if dc_id == 203 { dc_id = 2; }
+        if !(1u16..=5u16).contains(&dc_id) {
+            anyhow::bail!("unsupported Telegram DC index in MTProto handshake");
+        }
+        let relay_dc = if media { -(dc_id as i16) } else { dc_id as i16 };
         self.stats.ws_attempts.fetch_add(1, Ordering::Relaxed);
 
+        // The pool is keyed only by DC; keep media/test routes isolated.
+        if !media && !is_test_dc {
         if let Some(mut ws) = self.pool.take(dc_id).await {
             self.stats.ws_success.fetch_add(1, Ordering::Relaxed);
             self.stats.current_dc.store(dc_id as i64, Ordering::Relaxed);
             self.stats.current_transport.store(1, Ordering::Relaxed);
 
-            let upstream = obfs2::new_client(client_obfs.parsed.protocol, client_obfs.parsed.dc)?;
+            let upstream = obfs2::new_client(client_obfs.parsed.protocol, relay_dc)?;
             ws.send(Message::Binary(upstream.wire_header.to_vec().into())).await?;
             return self.pipe(client, client_obfs, &mut ws, upstream).await;
+        }
         }
 
         // Race all configured WSS endpoints instead of trying them serially.
         // The first successful TLS/WebSocket handshake wins, reducing startup
         // latency significantly on networks where one endpoint is slow/blocked.
-        let endpoints = self.endpoints(dc_id, media);
+        let endpoints = self.endpoints(dc_id, media, is_test_dc);
         let deadline = Duration::from_millis(self.config.timeouts.connect_ms);
         let mut remaining = endpoints.into_iter();
         let mut attempts = futures_util::stream::FuturesUnordered::new();
@@ -100,7 +111,7 @@ impl WebSocketTransport {
         for _ in 0..4 {
             if let Some(url) = remaining.next() {
                 let attempt_url = url.clone();
-                let target_ip = target_ip_for_url(&url, dc_id);
+                let target_ip = target_ip_for_url(&url, dc_id, is_test_dc);
                 attempts.push(async move {
                     let result = timeout(deadline, self.connect(&attempt_url, dc_id, target_ip)).await;
                     (url, result)
@@ -118,7 +129,7 @@ impl WebSocketTransport {
                     self.stats.current_transport.store(1, Ordering::Relaxed);
                     info!(dc = dc_id, media, %url, "WSS transport connected");
 
-                    let upstream = obfs2::new_client(client_obfs.parsed.protocol, client_obfs.parsed.dc)?;
+                    let upstream = obfs2::new_client(client_obfs.parsed.protocol, relay_dc)?;
                     ws.send(Message::Binary(upstream.wire_header.to_vec().into())).await?;
                     return self.pipe(client, client_obfs, &mut ws, upstream).await;
                 }
@@ -128,7 +139,7 @@ impl WebSocketTransport {
 
             if let Some(next_url) = remaining.next() {
                 let attempt_url = next_url.clone();
-                let target_ip = target_ip_for_url(&next_url, dc_id);
+                let target_ip = target_ip_for_url(&next_url, dc_id, is_test_dc);
                 attempts.push(async move {
                     let result = timeout(deadline, self.connect(&attempt_url, dc_id, target_ip)).await;
                     (next_url, result)
@@ -142,12 +153,13 @@ impl WebSocketTransport {
 
         // Final direct TCP fallback mirrors Flowseal's fallback order. It is
         // attempted with a strict timeout and never blocks the GUI.
-        if let Some(ip) = dc::default_ipv4(dc_id) {
+        let direct_ip = if is_test_dc { dc::test_ipv4(dc_id) } else { dc::default_ipv4(dc_id) };
+        if let Some(ip) = direct_ip {
             if let Ok(Ok(mut upstream_socket)) = timeout(
                 Duration::from_millis(3500),
                 TcpStream::connect(SocketAddr::new(ip, 443)),
             ).await {
-                let relay = obfs2::new_client(client_obfs.parsed.protocol, client_obfs.parsed.dc)?;
+                let relay = obfs2::new_client(client_obfs.parsed.protocol, relay_dc)?;
                 upstream_socket.set_nodelay(true)?;
                 upstream_socket.write_all(&relay.wire_header).await?;
                 self.stats.tcp_fallbacks.fetch_add(1, Ordering::Relaxed);
@@ -227,7 +239,7 @@ impl WebSocketTransport {
         )))
     }
 
-    fn endpoints(&self, dc_id: u16, media: bool) -> Vec<String> {
+    fn endpoints(&self, dc_id: u16, media: bool, is_test_dc: bool) -> Vec<String> {
         let mut endpoints: Vec<String> = self.config.websocket.templates.iter()
             .filter(|template| !template.contains("{dc_name}"))
             .map(|t| {
@@ -247,22 +259,42 @@ impl WebSocketTransport {
             };
         }
 
+        if is_test_dc {
+            endpoints = endpoints.into_iter().map(|endpoint| {
+                if endpoint.contains("/apiws_test") {
+                    endpoint
+                } else {
+                    endpoint.replacen("/apiws", "/apiws_test", 1)
+                }
+            }).collect();
+        }
+
         if media {
             endpoints.sort_by_key(|u| if u.contains("-1.web.telegram.org") { 0 } else { 1 });
         } else {
             endpoints.retain(|u| !u.contains("-1.web.telegram.org"));
         }
 
-        // Flowseal-style Cloudflare domains are fallback routes after the
-        // official Telegram endpoint candidates.
-        for domain in &self.config.websocket.fallback_domains {
-            let domain = domain.trim();
-            if domain.is_empty() || domain.contains('/') || domain.contains(':') {
-                continue;
-            }
-            let endpoint = format!("wss://kws{dc_id}.{domain}/apiws");
-            if !endpoints.contains(&endpoint) {
-                endpoints.push(endpoint);
+        // Flowseal worker fallback connects to the worker domain itself and
+        // sends dst/dc query parameters. A synthetic kwsN.<worker-domain> host
+        // is not a valid worker route.
+        let fallback_dst = dc::websocket_target_ipv4_for(dc_id, is_test_dc)
+            .map(|ip| ip.to_string());
+        if let Some(dst) = fallback_dst {
+            let path = if is_test_dc { "/apiws_test" } else { "/apiws" };
+            for domain in &self.config.websocket.fallback_domains {
+                let domain = domain.trim();
+                if domain.is_empty()
+                    || domain.contains('/')
+                    || domain.contains(':')
+                    || domain.chars().any(char::is_whitespace)
+                {
+                    continue;
+                }
+                let endpoint = format!("wss://{domain}{path}?dst={dst}&dc={dc_id}");
+                if !endpoints.contains(&endpoint) {
+                    endpoints.push(endpoint);
+                }
             }
         }
 
@@ -462,10 +494,10 @@ fn url_host(req: &tokio_tungstenite::tungstenite::handshake::client::Request) ->
     req.uri().host().unwrap_or_default().to_owned()
 }
 
-fn target_ip_for_url(url: &str, dc_id: u16) -> Option<std::net::IpAddr> {
+fn target_ip_for_url(url: &str, dc_id: u16, is_test_dc: bool) -> Option<std::net::IpAddr> {
     let host = url.strip_prefix("wss://")?.split('/').next()?;
     if host.ends_with(".web.telegram.org") {
-        dc::websocket_target_ipv4(dc_id)
+        dc::websocket_target_ipv4_for(dc_id, is_test_dc)
     } else {
         None
     }
@@ -516,13 +548,21 @@ pub async fn direct_tcp_bridge(
 }
 
 pub async fn probe(config: &AppConfig) -> bool {
+    probe_route(config, false).await
+}
+
+pub async fn probe_media(config: &AppConfig) -> bool {
+    probe_route(config, true).await
+}
+
+async fn probe_route(config: &AppConfig, media: bool) -> bool {
     let transport = WebSocketTransport::new(config.clone(), Arc::new(Statistics::default()));
-    let mut remaining = transport.endpoints(2, false).into_iter().take(8);
+    let mut remaining = transport.endpoints(2, media, false).into_iter().take(12);
     let mut attempts = futures_util::stream::FuturesUnordered::new();
 
     for _ in 0..4 {
         if let Some(url) = remaining.next() {
-            let target = target_ip_for_url(&url, 2);
+            let target = target_ip_for_url(&url, 2, false);
             let attempt_url = url.clone();
             let transport_ref = &transport;
             attempts.push(async move {
@@ -540,7 +580,7 @@ pub async fn probe(config: &AppConfig) -> bool {
             return true;
         }
         if let Some(url) = remaining.next() {
-            let target = target_ip_for_url(&url, 2);
+            let target = target_ip_for_url(&url, 2, false);
             let attempt_url = url.clone();
             let transport_ref = &transport;
             attempts.push(async move {

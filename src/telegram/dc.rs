@@ -26,14 +26,26 @@ pub fn default_ipv4(id: u16) -> Option<IpAddr> {
     Some(ip.parse().unwrap())
 }
 
+pub fn test_ipv4(id: u16) -> Option<IpAddr> {
+    let ip = match id {
+        1 => "149.154.175.10",
+        2 => "149.154.167.40",
+        3 => "149.154.175.117",
+        _ => return None,
+    };
+    Some(ip.parse().expect("constant IPv4 address"))
+}
+
 /// WSS bridge targets from Flowseal's default DC redirect configuration.
-/// DC2 and DC4 share the dedicated Telegram WS bridge address; other DCs
-/// fall back to their documented bootstrap IPs.
 pub fn websocket_target_ipv4(id: u16) -> Option<IpAddr> {
     match id {
-        2 | 4 => Some("149.154.167.220".parse().expect("constant IPv4 address")),
+        2 | 4 | 203 => Some("149.154.167.220".parse().expect("constant IPv4 address")),
         _ => default_ipv4(id),
     }
+}
+
+pub fn websocket_target_ipv4_for(id: u16, test_dc: bool) -> Option<IpAddr> {
+    if test_dc { test_ipv4(id) } else { websocket_target_ipv4(id) }
 }
 
 pub fn classify_ip(ip: IpAddr) -> Option<u16> {

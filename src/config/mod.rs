@@ -206,7 +206,7 @@ impl Default for TelegramIntegrationConfig {
     }
 }
 fn default_true() -> bool { true }
-const CURRENT_CONFIG_VERSION: u32 = 2;
+const CURRENT_CONFIG_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -250,6 +250,9 @@ impl AppConfig {
         self.telegram.configured_proxy = None;
         self.telegram.configured_mtproto = None;
         self.tun.enabled = false;
+        if self.websocket.fallback_domains.is_empty() {
+            self.websocket.fallback_domains = default_cfproxy_domains();
+        }
         self.schema_version = CURRENT_CONFIG_VERSION;
         true
     }

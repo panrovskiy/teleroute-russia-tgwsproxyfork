@@ -36,6 +36,8 @@ struct TeleRouteApp {
     last_refresh: Instant,
     diagnostics: Option<crate::diagnostics::DiagnosticReport>,
     diagnostics_rx: Option<std::sync::mpsc::Receiver<crate::diagnostics::DiagnosticReport>>,
+    diagnostics_running: bool,
+    egui_ctx: egui::Context,
     logs_cache: String,
     tray: Option<TrayState>,
     force_exit: bool,
@@ -65,6 +67,8 @@ impl TeleRouteApp {
             last_refresh: now,
             diagnostics: None,
             diagnostics_rx: None,
+            diagnostics_running: false,
+            egui_ctx: cc.egui_ctx.clone(),
             logs_cache: String::new(),
             tray,
             force_exit: false,
@@ -128,11 +132,34 @@ impl TeleRouteApp {
     }
 
     fn start_diagnostics(&mut self) {
-        let ctx = self.ctx.clone();
-        let task_ctx = ctx.clone();
+        if self.diagnostics_running {
+            return;
+        }
+
+        self.diagnostics_running = true;
+        self.diagnostics = Some(crate::diagnostics::DiagnosticReport {
+            socks5: "RUNNING".into(),
+            mtproto: "RUNNING".into(),
+            dns: "RUNNING".into(),
+            telegram_tcp: "RUNNING".into(),
+            websocket: "RUNNING".into(),
+            media_websocket: "RUNNING".into(),
+            tcp_fallback: "RUNNING".into(),
+            udp: "RUNNING".into(),
+            tun: "RUNNING".into(),
+            call_transport: "RUNNING".into(),
+        });
+
+        let app_ctx = self.ctx.clone();
+        let repaint_ctx = self.egui_ctx.clone();
         let (tx, rx) = std::sync::mpsc::channel();
-        ctx.spawn(async move { let result = task_ctx.run_diagnostics().await; let _ = tx.send(result); });
+        app_ctx.spawn(async move {
+            let result = app_ctx.run_diagnostics().await;
+            let _ = tx.send(result);
+            repaint_ctx.request_repaint();
+        });
         self.diagnostics_rx = Some(rx);
+        self.egui_ctx.request_repaint();
     }
 }
 
@@ -140,10 +167,35 @@ impl eframe::App for TeleRouteApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.poll_tray(&ctx);
-        if let Some(rx) = &self.diagnostics_rx {
-            if let Ok(result) = rx.try_recv() {
-                self.diagnostics = Some(result);
-                self.diagnostics_rx = None;
+        let diagnostics_result = self.diagnostics_rx.as_ref().map(|rx| rx.try_recv());
+        if let Some(result) = diagnostics_result {
+            match result {
+                Ok(report) => {
+                    self.diagnostics = Some(report);
+                    self.diagnostics_rx = None;
+                    self.diagnostics_running = false;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    if self.diagnostics_running {
+                        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.diagnostics = Some(crate::diagnostics::DiagnosticReport {
+                        socks5: "DIAGNOSTIC TASK FAILED".into(),
+                        mtproto: "DIAGNOSTIC TASK FAILED".into(),
+                        dns: "DIAGNOSTIC TASK FAILED".into(),
+                        telegram_tcp: "DIAGNOSTIC TASK FAILED".into(),
+                        websocket: "DIAGNOSTIC TASK FAILED".into(),
+                        media_websocket: "DIAGNOSTIC TASK FAILED".into(),
+                        tcp_fallback: "DIAGNOSTIC TASK FAILED".into(),
+                        udp: "DIAGNOSTIC TASK FAILED".into(),
+                        tun: "DIAGNOSTIC TASK FAILED".into(),
+                        call_transport: "DIAGNOSTIC TASK FAILED".into(),
+                    });
+                    self.diagnostics_rx = None;
+                    self.diagnostics_running = false;
+                }
             }
         }
         if self.last_refresh.elapsed().as_secs_f32() > 0.5 {
@@ -430,10 +482,19 @@ impl TeleRouteApp {
 
     fn diagnostics_page(&mut self, ui: &mut egui::Ui) {
         ui.heading("Diagnostics");
-        if ui.button("Run full test").clicked() { self.start_diagnostics(); }
+        ui.horizontal(|ui| {
+            if !self.diagnostics_running && ui.button("Run full test").clicked() {
+                self.start_diagnostics();
+            }
+            if self.diagnostics_running {
+                ui.add(egui::Spinner::new());
+                ui.label("Checking DNS, Telegram routes and WebSocket fallbacks…");
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+            }
+        });
         if let Some(r) = &self.diagnostics {
             egui::Grid::new("diagnostics-grid").num_columns(2).striped(true).show(ui, |ui| {
-                for (k, v) in [("SOCKS5", &r.socks5), ("MTProto", &r.mtproto), ("DNS", &r.dns), ("Telegram TCP (direct)", &r.telegram_tcp), ("WebSocket (Flowseal DC route)", &r.websocket), ("TCP fallback", &r.tcp_fallback), ("UDP", &r.udp), ("TUN", &r.tun), ("Call transport", &r.call_transport)] {
+                for (k, v) in [("SOCKS5", &r.socks5), ("MTProto", &r.mtproto), ("DNS", &r.dns), ("Telegram TCP (direct)", &r.telegram_tcp), ("WebSocket (Flowseal DC route)", &r.websocket), ("Media WebSocket", &r.media_websocket), ("TCP fallback", &r.tcp_fallback), ("UDP", &r.udp), ("TUN", &r.tun), ("Call transport", &r.call_transport)] {
                     ui.strong(k);
                     let value = v.as_str();
                     let lower = value.to_ascii_lowercase();
@@ -500,14 +561,14 @@ impl TeleRouteApp {
             ui.checkbox(&mut cfg.telegram.auto_configure,"Automatically add proxy to Telegram once");
             ui.label(format!(
                 "SOCKS5 registration: {}",
-                cfg.telegram.configured_proxy.as_deref().and_then(|value| value.strip_prefix("v2:")).unwrap_or("not registered")
+                cfg.telegram.configured_proxy.as_deref().and_then(|value| value.strip_prefix(v3:")).unwrap_or("not registered")
             ));
             if ui.button("Mark current SOCKS5 as already configured").clicked() {
                 let host = match cfg.proxy.bind.as_str() {
                     "0.0.0.0" | "::" | "[::]" => "127.0.0.1",
                     other => other,
                 };
-                cfg.telegram.configured_proxy = Some(format!("v2:{}:{}", host, cfg.proxy.port));
+                cfg.telegram.configured_proxy = Some(format!(v3:{}:{}", host, cfg.proxy.port));
             }
             if ui.button("Forget SOCKS5 Telegram registration").clicked() {
                 cfg.telegram.configured_proxy = None;

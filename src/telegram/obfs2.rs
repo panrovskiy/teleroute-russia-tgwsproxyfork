@@ -68,7 +68,11 @@ pub fn parse_secret_server_header(wire: [u8; 64], secret: &[u8; 16]) -> io::Resu
     }
 
     let dc = i16::from_le_bytes([decrypted[60], decrypted[61]]);
-    if dc == 0 || dc.unsigned_abs() > 5 {
+    let dc_id = dc.unsigned_abs();
+    let valid_dc = (1u16..=5u16).contains(&dc_id)
+        || dc_id == 203
+        || (10_001u16..=10_005u16).contains(&dc_id);
+    if !valid_dc {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "invalid Telegram DC in MTProto secret handshake",

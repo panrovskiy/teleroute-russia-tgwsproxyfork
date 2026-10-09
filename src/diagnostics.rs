@@ -9,6 +9,7 @@ pub struct DiagnosticReport {
     pub dns: String,
     pub telegram_tcp: String,
     pub websocket: String,
+    pub media_websocket: String,
     pub tcp_fallback: String,
     pub udp: String,
     pub tun: String,
@@ -58,6 +59,11 @@ pub async fn run_full(config: &AppConfig, _stats: Arc<Statistics>, tun_active: b
     } else {
         "FAILED"
     };
+    let media_ws = if crate::websocket::probe_media(config).await {
+        "OK"
+    } else {
+        "FAILED"
+    };
 
     let udp = match UdpSocket::bind("0.0.0.0:0").await {
         Ok(socket) => match socket
@@ -72,13 +78,13 @@ pub async fn run_full(config: &AppConfig, _stats: Arc<Statistics>, tun_active: b
 
     let tun = if tun_active { "ACTIVE" } else { "INACTIVE" };
     let call = if config.telegram.frontend == crate::config::TelegramFrontend::MtprotoWs {
-        if ws == "OK" {
-            "READY (MTProto media WS)"
+        if ws == "OK" && media_ws == "OK" {
+            "MEDIA WSS OK (call not end-to-end verified)"
         } else {
-            "WAITING FOR WSS"
+            "MEDIA WSS FAILED"
         }
     } else if tun_active {
-        "READY (TUN)"
+        "TUN ACTIVE (call not end-to-end verified)"
     } else {
         "UNAVAILABLE"
     };
@@ -89,6 +95,7 @@ pub async fn run_full(config: &AppConfig, _stats: Arc<Statistics>, tun_active: b
         dns: dns.into(),
         telegram_tcp: tcp.into(),
         websocket: ws.into(),
+        media_websocket: media_ws.into(),
         tcp_fallback: if tcp == "OK" {
             "AVAILABLE"
         } else {

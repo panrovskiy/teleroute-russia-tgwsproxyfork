@@ -67,7 +67,7 @@ impl AppContext {
                     return;
                 }
 
-                let proxy_id = format!("v2:{}:{}:{}", server, config.mtproto.port, secret);
+                let proxy_id = format!(v3:{}:{}:{}", server, config.mtproto.port, secret);
 
                 if config.telegram.auto_configure
                     && config.telegram.configured_mtproto.as_deref() != Some(proxy_id.as_str())
@@ -130,7 +130,7 @@ impl AppContext {
                         let host = config.telegram.mtproto_bind.clone();
                         let port = config.telegram.mtproto_port;
                         let secret = config.telegram.mtproto_secret.clone();
-                        let proxy_id = format!("v2:{}:{}:{}", host, port, secret);
+                        let proxy_id = format!(v3:{}:{}:{}", host, port, secret);
 
                         if config.telegram.auto_configure
                             && config.telegram.configured_mtproto.as_deref() != Some(proxy_id.as_str())
@@ -174,7 +174,7 @@ impl AppContext {
                             other => other,
                         };
                         let port = config.proxy.port;
-                        let proxy_id = format!("v2:{}:{}", host, port);
+                        let proxy_id = format!(v3:{}:{}", host, port);
 
                         if config.telegram.auto_configure
                             && config.telegram.configured_proxy.as_deref() != Some(proxy_id.as_str())
@@ -243,7 +243,7 @@ impl AppContext {
                             Ok(Ok(tun)) => {
                                 tun_telemetry.write().tun = "ACTIVE".into();
                                 tun_telemetry.write().udp = "READY".into();
-                                tun_telemetry.write().calls = "READY (TUN + WS media)".into();
+                                tun_telemetry.write().calls = "TUN ACTIVE; CALL NOT VERIFIED".into();
                                 tokio::spawn(async move {
                                     let _ = AssertUnwindSafe(tun.run(tun_shutdown))
                                         .catch_unwind()
@@ -268,7 +268,7 @@ impl AppContext {
             } else {
                 telemetry.write().tun = "NOT REQUIRED".into();
                 telemetry.write().udp = "NOT REQUIRED".into();
-                telemetry.write().calls = "AVAILABLE VIA WS MEDIA".into();
+                telemetry.write().calls = "MEDIA WSS NOT VERIFIED".into();
             }
 
             {
@@ -316,6 +316,7 @@ impl AppContext {
                 report.mtproto = "STOPPED (disconnected)".into();
             }
             report.call_transport = "NOT RUNNING (disconnected)".into();
+            report.media_websocket = "NOT RUNNING (disconnected)".into();
         }
 
         report

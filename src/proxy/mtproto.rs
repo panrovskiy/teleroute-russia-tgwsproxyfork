@@ -64,7 +64,16 @@ impl MtprotoServer {
                         match result {
                             Ok(Ok(())) => {}
                             Ok(Err(e)) => debug!(%peer, error = %e, "MTProto client closed"),
-                            Err(panic) => error!(%peer, ?panic, "MTProto client handler panicked"),
+                            Err(panic) => {
+                                let detail = if let Some(message) = panic.downcast_ref::<&str>() {
+                                    (*message).to_owned()
+                                } else if let Some(message) = panic.downcast_ref::<String>() {
+                                    message.clone()
+                                } else {
+                                    "non-string panic payload".to_owned()
+                                };
+                                error!(%peer, panic = %detail, "MTProto client handler panicked");
+                            },
                         }
 
                     });
@@ -88,15 +97,19 @@ impl MtprotoServer {
         };
 
         self.stats.active_connections.fetch_add(1, Ordering::Relaxed);
-        let result = WebSocketTransport::with_pool(
-            self.config.clone(),
-            self.stats.clone(),
-            self.ws_pool.clone(),
-        )
-        .bridge(&mut stream, header, client_obfs)
-        .await;
+        let result = AssertUnwindSafe(
+            WebSocketTransport::with_pool(
+                self.config.clone(),
+                self.stats.clone(),
+                self.ws_pool.clone(),
+            )
+            .bridge(&mut stream, header, client_obfs)
+        ).catch_unwind().await;
         self.stats.active_connections.fetch_sub(1, Ordering::Relaxed);
-        result
+        match result {
+            Ok(result) => result,
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
     }
 }
 
