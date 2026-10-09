@@ -155,21 +155,33 @@ mod tests {
     #[test]
     fn roundtrip_secret_header_parse() {
         let secret = [0x11u8; 16];
-        let mut plain = filtered_random_header();
-        plain[56..60].copy_from_slice(b"\xee\xee\xee\xee");
-        plain[60..62].copy_from_slice(&(-2i16).to_le_bytes());
+        let mut random_header = filtered_random_header();
 
+        let protocol = *b"\xee\xee\xee\xee";
+        let dc = -2i16;
+        let mut tail_plain = [0u8; 8];
+        tail_plain[..4].copy_from_slice(&protocol);
+        tail_plain[4..6].copy_from_slice(&dc.to_le_bytes());
+        tail_plain[6..8].copy_from_slice(&[0x12, 0x34]);
+
+        // The first 56 bytes of the MTProto obfuscated2 init remain unchanged.
+        // Only the final eight bytes are XORed with AES-CTR keystream at offset 56.
         let mut hasher = Sha256::new();
-        hasher.update(&plain[8..40]);
+        hasher.update(&random_header[8..40]);
         hasher.update(&secret);
         let key = hasher.finalize();
 
-        let mut cipher = make_cipher(&key, &plain[40..56]).unwrap();
-        let mut wire = plain;
-        cipher.apply_keystream(&mut wire);
+        let mut cipher = make_cipher(&key, &random_header[40..56]).unwrap();
+        let mut keystream = [0u8; 64];
+        cipher.apply_keystream(&mut keystream);
+
+        let mut wire = random_header;
+        for i in 0..8 {
+            wire[56 + i] = tail_plain[i] ^ keystream[56 + i];
+        }
 
         let parsed = parse_secret_server_header(wire, &secret).unwrap();
-        assert_eq!(parsed.parsed.protocol, *b"\xee\xee\xee\xee");
-        assert_eq!(parsed.parsed.dc, -2);
+        assert_eq!(parsed.parsed.protocol, protocol);
+        assert_eq!(parsed.parsed.dc, dc);
     }
 }
