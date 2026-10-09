@@ -1,4 +1,4 @@
-use std::{ffi::OsStr, fs, os::windows::{ffi::OsStrExt, process::CommandExt}, path::{Path, PathBuf}};
+use std::{ffi::OsStr, fs, os::windows::ffi::OsStrExt, path::{Path, PathBuf}, ptr};
 
 use windows_sys::{
     Win32::{
@@ -88,20 +88,29 @@ pub fn write_startup_error(message: &str) {
 }
 
 
-/// Ask Telegram Desktop to add the local SOCKS5 proxy through its registered URI handler.
-/// ShellExecuteW uses the Windows shell association for tg:// instead of launching Explorer.
+/// Pass the complete URI to the Windows protocol handler as one argument.
+/// In particular, do not route tg:// URLs through cmd.exe: ampersands in the
+/// query string are shell operators and can corrupt the server/port/secret.
 fn launch_uri_detached(uri: String) -> anyhow::Result<()> {
-    // Do not invoke ShellExecuteW from the elevated GUI process. Starting the
-    // protocol through a hidden cmd.exe keeps Telegram in the user's normal
-    // desktop context and isolates any protocol-handler failure from TeleRoute.
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    let operation = wide_str("open");
+    let target = wide_str(&uri);
 
-    std::process::Command::new("cmd.exe")
-        .creation_flags(CREATE_NO_WINDOW)
-        .args(["/C", "start", "", &uri])
-        .spawn()
-        .map(|_| ())
-        .map_err(Into::into)
+    let result = unsafe {
+        ShellExecuteW(
+            0 as HWND,
+            operation.as_ptr(),
+            target.as_ptr(),
+            ptr::null(),
+            ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+
+    if (result as isize) <= 32 {
+        anyhow::bail!("Windows could not open Telegram proxy link (ShellExecuteW code {})", result as isize);
+    }
+
+    Ok(())
 }
 
 pub fn open_telegram_socks_proxy(host: &str, port: u16) -> anyhow::Result<()> {

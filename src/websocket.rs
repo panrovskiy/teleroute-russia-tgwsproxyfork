@@ -32,7 +32,7 @@ impl WebSocketPool {
                     Arc::new(Statistics::default()),
                     self.clone(),
                 );
-                let Some(target_ip) = dc::default_ipv4(dc) else {
+                let Some(target_ip) = dc::websocket_target_ipv4(dc) else {
                     break;
                 };
                 let Some(url) = transport.endpoints(dc, false).first().cloned() else {
@@ -93,7 +93,7 @@ impl WebSocketTransport {
         // The first successful TLS/WebSocket handshake wins, reducing startup
         // latency significantly on networks where one endpoint is slow/blocked.
         let endpoints = self.endpoints(dc_id, media);
-        let target_ip = dc::default_ipv4(dc_id)
+        let target_ip = dc::websocket_target_ipv4(dc_id)
             .ok_or_else(|| anyhow::anyhow!("no default Telegram DC address for DC{dc_id}"))?;
         let deadline = Duration::from_millis(self.config.timeouts.connect_ms);
         let mut attempts = futures_util::stream::FuturesUnordered::new();
@@ -171,6 +171,7 @@ impl WebSocketTransport {
 
     fn endpoints(&self, dc_id: u16, media: bool) -> Vec<String> {
         let mut endpoints: Vec<String> = self.config.websocket.templates.iter()
+            .filter(|template| !template.contains("{dc_name}"))
             .map(|t| {
                 t.replace("{dc}", &dc_id.to_string())
                     .replace("{dc_name}", dc::name(dc_id))
@@ -258,12 +259,8 @@ impl WebSocketTransport {
     }
 }
 
-fn url_host(req: &tokio_tungstenite::tungstenite::handshake::client::Request) -> String {
-    req.uri().host().unwrap_or_default().to_string()
-}
-
 fn target_from_header(_header: &[u8; 64], dc_id: u16) -> String {
-    dc::default_ipv4(dc_id)
+    dc::websocket_target_ipv4(dc_id)
         .map(|ip| format!("{ip}:443"))
         .unwrap_or_else(|| format!("{}:443", dc::name(dc_id)))
 }
@@ -307,10 +304,11 @@ pub async fn direct_tcp_bridge(
 }
 
 pub async fn probe(config: &crate::config::EndpointConfig) -> bool {
-    let Some(template) = config.templates.first() else { return false; };
-    let url = template
-        .replace("{dc}", "2")
-        .replace("{dc_name}", "venus");
+    let template = config.templates.iter()
+        .find(|template| !template.contains("{dc_name}") && !template.contains("-1.web.telegram.org"))
+        .cloned()
+        .unwrap_or_else(|| "wss://kws{dc}.web.telegram.org/apiws".to_owned());
+    let url = template.replace("{dc}", "2").replace("{dc_name}", "venus");
 
     let mut req = match url.clone().into_client_request() {
         Ok(r) => r,
@@ -322,7 +320,7 @@ pub async fn probe(config: &crate::config::EndpointConfig) -> bool {
         HeaderValue::from_static("binary"),
     );
 
-    let target_ip = match dc::default_ipv4(2) {
+    let target_ip = match dc::websocket_target_ipv4(2) {
         Some(ip) => ip,
         None => return false,
     };

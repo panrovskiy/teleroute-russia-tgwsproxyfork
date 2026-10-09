@@ -54,7 +54,6 @@ impl Default for EndpointConfig {
             templates: vec![
                 "wss://kws{dc}.web.telegram.org/apiws".into(),
                 "wss://kws{dc}-1.web.telegram.org/apiws".into(),
-                "wss://{dc_name}.web.telegram.org/apiws".into(),
             ],
             path: "/apiws".into(),
             pool_size: 1,

@@ -67,7 +67,7 @@ impl AppContext {
                     return;
                 }
 
-                let proxy_id = format!("{}:{}:{}", server, config.mtproto.port, secret);
+                let proxy_id = format!("v2:{}:{}:{}", server, config.mtproto.port, secret);
 
                 if config.telegram.auto_configure
                     && config.telegram.configured_mtproto.as_deref() != Some(proxy_id.as_str())
@@ -130,7 +130,7 @@ impl AppContext {
                         let host = config.telegram.mtproto_bind.clone();
                         let port = config.telegram.mtproto_port;
                         let secret = config.telegram.mtproto_secret.clone();
-                        let proxy_id = format!("{}:{}:{}", host, port, secret);
+                        let proxy_id = format!("v2:{}:{}:{}", host, port, secret);
 
                         if config.telegram.auto_configure
                             && config.telegram.configured_mtproto.as_deref() != Some(proxy_id.as_str())
@@ -174,7 +174,7 @@ impl AppContext {
                             other => other,
                         };
                         let port = config.proxy.port;
-                        let proxy_id = format!("{}:{}", host, port);
+                        let proxy_id = format!("v2:{}:{}", host, port);
 
                         if config.telegram.auto_configure
                             && config.telegram.configured_proxy.as_deref() != Some(proxy_id.as_str())
@@ -299,8 +299,26 @@ impl AppContext {
 
     pub async fn run_diagnostics(&self) -> crate::diagnostics::DiagnosticReport {
         let cfg = self.config.read().clone();
-        let tun = self.telemetry.read().tun == "ACTIVE";
-        crate::diagnostics::run_full(&cfg, self.stats.clone(), tun).await
+        let telemetry = self.telemetry.read().clone();
+        let connected = matches!(
+            telemetry.status,
+            ConnectionStatus::Connected | ConnectionStatus::Connecting
+        );
+        let tun = telemetry.tun == "ACTIVE";
+
+        let mut report = crate::diagnostics::run_full(&cfg, self.stats.clone(), tun).await;
+
+        if !connected {
+            if report.socks5 == "NOT LISTENING" {
+                report.socks5 = "STOPPED (disconnected)".into();
+            }
+            if report.mtproto == "NOT LISTENING" {
+                report.mtproto = "STOPPED (disconnected)".into();
+            }
+            report.call_transport = "NOT RUNNING (disconnected)".into();
+        }
+
+        report
     }
 }
 

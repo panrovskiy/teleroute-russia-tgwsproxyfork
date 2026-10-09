@@ -39,21 +39,37 @@ struct TeleRouteApp {
     logs_cache: String,
     tray: Option<TrayState>,
     force_exit: bool,
+    last_page: Page,
+    page_started: Instant,
 }
 
 impl TeleRouteApp {
     fn new(cc: &eframe::CreationContext<'_>, ctx: AppContext) -> anyhow::Result<Self> {
+        let mut visuals = egui::Visuals::dark();
+        visuals.panel_fill = egui::Color32::from_rgb(16, 20, 29);
+        visuals.window_fill = egui::Color32::from_rgb(20, 25, 35);
+        visuals.extreme_bg_color = egui::Color32::from_rgb(11, 14, 21);
+        visuals.faint_bg_color = egui::Color32::from_rgb(28, 35, 48);
+        visuals.selection.bg_fill = egui::Color32::from_rgb(42, 104, 169);
+        visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(31, 40, 54);
+        visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(43, 57, 76);
+        visuals.widgets.active.bg_fill = egui::Color32::from_rgb(42, 104, 169);
+        cc.egui_ctx.set_visuals(visuals);
+
+        let now = Instant::now();
         let tray = build_tray(ctx.clone(), cc.egui_ctx.clone()).ok();
 
         Ok(Self {
             ctx,
             page: Page::Connection,
-            last_refresh: Instant::now(),
+            last_refresh: now,
             diagnostics: None,
             diagnostics_rx: None,
             logs_cache: String::new(),
             tray,
             force_exit: false,
+            last_page: Page::Connection,
+            page_started: now,
         })
     }
 
@@ -151,6 +167,15 @@ impl eframe::App for TeleRouteApp {
             }
         }
 
+        if self.page != self.last_page {
+            self.last_page = self.page;
+            self.page_started = Instant::now();
+        }
+        let page_progress = (self.page_started.elapsed().as_secs_f32() / 0.18).clamp(0.0, 1.0);
+        if page_progress < 1.0 {
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
+        }
+
         let narrow = ui.available_width() < 820.0;
 
         egui::Panel::top("top").show(ui, |ui| {
@@ -174,6 +199,7 @@ impl eframe::App for TeleRouteApp {
         }
 
         egui::CentralPanel::default().show(ui, |ui| {
+            ui.add_space((1.0 - page_progress) * 10.0);
             match self.page {
                 Page::Connection => self.connection_page(ui),
                 Page::Diagnostics => self.diagnostics_page(ui),
@@ -242,12 +268,22 @@ impl TeleRouteApp {
         );
         ui.add_space(8.0);
 
-        let (status_label, status_color) = match t.status {
+        let (status_label, mut status_color) = match t.status {
             ConnectionStatus::Connected => ("READY", egui::Color32::from_rgb(75, 190, 120)),
             ConnectionStatus::Connecting => ("CONNECTING", egui::Color32::from_rgb(235, 180, 70)),
             ConnectionStatus::Error => ("ERROR", egui::Color32::from_rgb(225, 85, 85)),
             ConnectionStatus::Disconnected => ("DISCONNECTED", egui::Color32::from_rgb(145, 150, 160)),
         };
+        if t.status == ConnectionStatus::Connected {
+            let phase = ui.ctx().input(|input| input.time) as f32;
+            let pulse = (phase * 2.2).sin() * 0.5 + 0.5;
+            status_color = egui::Color32::from_rgb(
+                55,
+                (155.0 + pulse * 45.0) as u8,
+                (95.0 + pulse * 22.0) as u8,
+            );
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+        }
 
         egui::Frame::group(ui.style())
             .inner_margin(egui::Margin::same(16))
@@ -284,9 +320,14 @@ impl TeleRouteApp {
                         |ui| {
                             let button_text =
                                 if t.status == ConnectionStatus::Connected { "DISCONNECT" } else { "CONNECT" };
+                            let button_fill = if t.status == ConnectionStatus::Connected {
+                                egui::Color32::from_rgb(130, 52, 67)
+                            } else {
+                                egui::Color32::from_rgb(34, 124, 91)
+                            };
                             let button = egui::Button::new(
                                 egui::RichText::new(button_text).strong().size(16.0),
-                            );
+                            ).fill(button_fill);
 
                             if ui
                                 .add_sized([190.0, 54.0], button)
@@ -373,9 +414,20 @@ impl TeleRouteApp {
         if ui.button("Run full test").clicked() { self.start_diagnostics(); }
         if let Some(r) = &self.diagnostics {
             egui::Grid::new("diagnostics-grid").num_columns(2).striped(true).show(ui, |ui| {
-                for (k, v) in [("SOCKS5", &r.socks5), ("MTProto", &r.mtproto), ("DNS", &r.dns), ("Telegram TCP (direct)", &r.telegram_tcp), ("WebSocket (DC IP + SNI)", &r.websocket), ("TCP fallback", &r.tcp_fallback), ("UDP", &r.udp), ("TUN", &r.tun), ("Call transport", &r.call_transport)] {
+                for (k, v) in [("SOCKS5", &r.socks5), ("MTProto", &r.mtproto), ("DNS", &r.dns), ("Telegram TCP (direct)", &r.telegram_tcp), ("WebSocket (Flowseal DC route)", &r.websocket), ("TCP fallback", &r.tcp_fallback), ("UDP", &r.udp), ("TUN", &r.tun), ("Call transport", &r.call_transport)] {
                     ui.strong(k);
-                    ui.label(v);
+                    let value = v.as_str();
+                    let lower = value.to_ascii_lowercase();
+                    let color = if lower.contains("ok") || lower.contains("listening") || lower.contains("available") || lower == "active" {
+                        egui::Color32::from_rgb(83, 190, 130)
+                    } else if lower.contains("failed") || lower.contains("blocked") || lower.contains("unavailable") {
+                        egui::Color32::from_rgb(225, 95, 95)
+                    } else if lower.contains("stopped") || lower.contains("not running") || lower.contains("not listening") {
+                        egui::Color32::from_rgb(150, 158, 171)
+                    } else {
+                        egui::Color32::from_rgb(230, 184, 92)
+                    };
+                    ui.label(egui::RichText::new(value).color(color));
                     ui.end_row();
                 }
             });
@@ -429,14 +481,14 @@ impl TeleRouteApp {
             ui.checkbox(&mut cfg.telegram.auto_configure,"Automatically add proxy to Telegram once");
             ui.label(format!(
                 "SOCKS5 registration: {}",
-                cfg.telegram.configured_proxy.as_deref().unwrap_or("not registered")
+                cfg.telegram.configured_proxy.as_deref().and_then(|value| value.strip_prefix("v2:")).unwrap_or("not registered")
             ));
             if ui.button("Mark current SOCKS5 as already configured").clicked() {
                 let host = match cfg.proxy.bind.as_str() {
                     "0.0.0.0" | "::" | "[::]" => "127.0.0.1",
                     other => other,
                 };
-                cfg.telegram.configured_proxy = Some(format!("{}:{}", host, cfg.proxy.port));
+                cfg.telegram.configured_proxy = Some(format!("v2:{}:{}", host, cfg.proxy.port));
             }
             if ui.button("Forget SOCKS5 Telegram registration").clicked() {
                 cfg.telegram.configured_proxy = None;
@@ -576,12 +628,15 @@ impl TeleRouteApp {
 
 fn responsive_card(ui: &mut egui::Ui, title: &str, value: &str) {
     let width = ui.available_width().max(1.0);
-    egui::Frame::group(ui.style()).show(ui, |ui| {
-        ui.set_min_size([width, 72.0].into());
-        ui.weak(title);
-        ui.add_space(4.0);
-        ui.label(egui::RichText::new(value).strong().size(18.0));
-    });
+    egui::Frame::group(ui.style())
+        .fill(egui::Color32::from_rgb(24, 31, 43))
+        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(43, 54, 72)))
+        .show(ui, |ui| {
+            ui.set_min_size([width, 76.0].into());
+            ui.weak(title);
+            ui.add_space(5.0);
+            ui.label(egui::RichText::new(value).strong().size(18.0));
+        });
 }
 fn human_bytes(n: u64) -> String { const U:[&str;4]=["B","KB","MB","GB"]; let mut v=n as f64; let mut i=0; while v>=1024.0 && i<3 {v/=1024.0;i+=1;} format!("{v:.1} {}",U[i]) }
 fn build_tray(ctx: AppContext, egui_ctx: egui::Context) -> anyhow::Result<TrayState> {
