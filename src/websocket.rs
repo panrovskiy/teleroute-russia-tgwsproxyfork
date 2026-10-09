@@ -197,7 +197,10 @@ impl WebSocketTransport {
         let mut addresses: Vec<SocketAddr> = if let Some(ip) = target_ip {
             vec![SocketAddr::new(ip, 443)]
         } else {
-            lookup_host((url_host(&req), 443)).await?.collect()
+            {
+                let host = url_host(&req);
+                lookup_host((host.as_str(), 443)).await?.collect()
+            }
         };
 
         let mut last_error = None;
@@ -450,6 +453,10 @@ impl MtprotoPacketSplitter {
         self.plain.clear();
         if self.encrypted.is_empty() { Vec::new() } else { vec![std::mem::take(&mut self.encrypted)] }
     }
+}
+
+fn url_host(req: &tokio_tungstenite::tungstenite::handshake::client::Request) -> String {
+    req.uri().host().unwrap_or_default().to_owned()
 }
 
 fn target_ip_for_url(url: &str, dc_id: u16) -> Option<std::net::IpAddr> {
