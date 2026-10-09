@@ -151,10 +151,11 @@ impl TeleRouteApp {
         });
 
         let app_ctx = self.ctx.clone();
+        let task_ctx = app_ctx.clone();
         let repaint_ctx = self.egui_ctx.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         app_ctx.spawn(async move {
-            let result = app_ctx.run_diagnostics().await;
+            let result = task_ctx.run_diagnostics().await;
             let _ = tx.send(result);
             repaint_ctx.request_repaint();
         });
@@ -561,14 +562,14 @@ impl TeleRouteApp {
             ui.checkbox(&mut cfg.telegram.auto_configure,"Automatically add proxy to Telegram once");
             ui.label(format!(
                 "SOCKS5 registration: {}",
-                cfg.telegram.configured_proxy.as_deref().and_then(|value| value.strip_prefix(v3:")).unwrap_or("not registered")
+                cfg.telegram.configured_proxy.as_deref().and_then(|value| value.strip_prefix("v3:")).unwrap_or("not registered")
             ));
             if ui.button("Mark current SOCKS5 as already configured").clicked() {
                 let host = match cfg.proxy.bind.as_str() {
                     "0.0.0.0" | "::" | "[::]" => "127.0.0.1",
                     other => other,
                 };
-                cfg.telegram.configured_proxy = Some(format!(v3:{}:{}", host, cfg.proxy.port));
+                cfg.telegram.configured_proxy = Some(format!("v3:{:{}", host, cfg.proxy.port));
             }
             if ui.button("Forget SOCKS5 Telegram registration").clicked() {
                 cfg.telegram.configured_proxy = None;
