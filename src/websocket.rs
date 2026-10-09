@@ -1,5 +1,5 @@
 use crate::{config::AppConfig, statistics::Statistics, telegram::{dc, obfs2::{self, ClientObfs, ServerObfs}}};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{FutureExt, SinkExt, StreamExt};
 use ctr::cipher::StreamCipher;
 use std::{collections::HashMap, net::SocketAddr, sync::{atomic::Ordering, Arc}, time::Duration};
 use tokio::sync::Mutex;
@@ -104,7 +104,7 @@ impl WebSocketTransport {
                 attempts.push(async move {
                     let result = timeout(deadline, self.connect(&attempt_url, dc_id, target_ip)).await;
                     (url, result)
-                });
+                }.boxed());
             }
         }
 
@@ -132,7 +132,7 @@ impl WebSocketTransport {
                 attempts.push(async move {
                     let result = timeout(deadline, self.connect(&attempt_url, dc_id, target_ip)).await;
                     (next_url, result)
-                });
+                }.boxed());
             }
         }
 
@@ -514,13 +514,14 @@ pub async fn probe(config: &AppConfig) -> bool {
         if let Some(url) = remaining.next() {
             let target = target_ip_for_url(&url, 2);
             let attempt_url = url.clone();
+            let transport_ref = &transport;
             attempts.push(async move {
                 let result = timeout(
                     Duration::from_millis(3000),
-                    transport.connect(&attempt_url, 2, target),
+                    transport_ref.connect(&attempt_url, 2, target),
                 ).await;
                 (url, result)
-            });
+            }.boxed());
         }
     }
 
@@ -531,13 +532,14 @@ pub async fn probe(config: &AppConfig) -> bool {
         if let Some(url) = remaining.next() {
             let target = target_ip_for_url(&url, 2);
             let attempt_url = url.clone();
+            let transport_ref = &transport;
             attempts.push(async move {
                 let result = timeout(
                     Duration::from_millis(3000),
-                    transport.connect(&attempt_url, 2, target),
+                    transport_ref.connect(&attempt_url, 2, target),
                 ).await;
                 (url, result)
-            });
+            }.boxed());
         }
     }
     false
@@ -556,7 +558,7 @@ mod packet_splitter_tests {
         assert!(splitter.push(&encrypted[..3], &plain[..3]).is_empty());
         let frames = splitter.push(&encrypted[3..], &plain[3..]);
         assert_eq!(frames.len(), 1);
-        assert_eq!(frames[0], encrypted);
+        assert_eq!(frames[0].as_slice(), encrypted.as_slice());
         assert!(splitter.flush().is_empty());
     }
 
