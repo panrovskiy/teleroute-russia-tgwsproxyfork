@@ -1,5 +1,6 @@
 use crate::{app::{AppContext, ConnectionStatus}, config::{Mode, TelegramFrontend}};
 use eframe::egui;
+use rand::{rng, RngCore};
 use std::time::Instant;
 use tray_icon::{menu::{Menu, MenuItem}, Icon, TrayIconBuilder};
 
@@ -618,10 +619,42 @@ impl TeleRouteApp {
                     });
                     ui.horizontal(|ui| {
                         ui.label("Secret");
-                        ui.add_sized(
+                        let response = ui.add_sized(
                             [ui.available_width().min(420.0), 28.0],
                             egui::TextEdit::singleline(&mut cfg.telegram.mtproto_secret),
                         );
+                        if response.changed() {
+                            cfg.telegram.configured_mtproto = None;
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.button("Randomize secret").clicked() {
+                            cfg.telegram.mtproto_secret = generate_random_secret();
+                            cfg.telegram.configured_mtproto = None;
+                        }
+
+                        if ui.button("Randomize + configure Telegram").clicked() {
+                            cfg.telegram.mtproto_secret = generate_random_secret();
+                            cfg.telegram.configured_mtproto = None;
+
+                            #[cfg(windows)]
+                            {
+                                let host = cfg.telegram.mtproto_bind.clone();
+                                let secret = format!("dd{}", cfg.telegram.mtproto_secret.trim());
+                                if crate::platform::windows::open_telegram_mtproto_proxy(
+                                    &host,
+                                    cfg.telegram.mtproto_port,
+                                    &secret,
+                                ).is_ok() {
+                                    cfg.telegram.configured_mtproto = Some(format!(
+                                        "{}:{}:{}",
+                                        host,
+                                        cfg.telegram.mtproto_port,
+                                        cfg.telegram.mtproto_secret.trim()
+                                    ));
+                                }
+                            }
+                        }
                     });
 
                     if let Some(proxy) = &cfg.telegram.configured_mtproto {
@@ -705,6 +738,12 @@ impl TeleRouteApp {
         ui.collapsing("Logging", |ui| { ui.add_sized([ui.available_width().min(360.0), 28.0], egui::TextEdit::singleline(&mut cfg.logging.level)); ui.add(egui::Slider::new(&mut cfg.logging.keep_files,1..=20).text("Retained files")); });
         if ui.button("Save settings").clicked() { let _ = self.ctx.save_config(); }
     }
+}
+
+fn generate_random_secret() -> String {
+    let mut bytes = [0u8; 16];
+    rng().fill_bytes(&mut bytes);
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn responsive_card(ui: &mut egui::Ui, title: &str, value: &str) {
