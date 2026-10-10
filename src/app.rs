@@ -221,6 +221,17 @@ impl AppContext {
                 }
             };
 
+            // Prewarm the first Telegram routes asynchronously. Local UI readiness
+            // remains immediate; the first Telegram client then gets a pooled socket
+            // instead of waiting through DNS/TLS endpoint discovery.
+            if config.telegram.frontend == TelegramFrontend::MtprotoWs {
+                let warm_config = config.clone();
+                let warm_pool = mtproto_pool.clone();
+                tokio::spawn(async move {
+                    warm_pool.warmup(&warm_config).await;
+                });
+            }
+
             // TUN is optional. Telegram WS media uses the negative-DC routing
             // path (kwsN-1) directly, matching Flowseal's architecture.
             if config.tun.enabled && matches!(config.routing.mode, Mode::Calls | Mode::Full) {
@@ -315,6 +326,7 @@ impl AppContext {
                             tracing::info!(latency_ms, "Telegram media WSS route is reachable");
                         }
                         Ok(None) | Err(_) => {
+                            monitor_stats.ping_ms.store(-1, std::sync::atomic::Ordering::Relaxed);
                             let mut status = monitor_telemetry.write();
                             if status.status != ConnectionStatus::Disconnected {
                                 status.calls = "MEDIA WSS FAILED".into();

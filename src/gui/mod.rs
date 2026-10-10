@@ -44,6 +44,9 @@ struct TeleRouteApp {
     force_exit: bool,
     last_page: Page,
     page_started: Instant,
+    cf_domains_draft: String,
+    cf_worker_domains_draft: String,
+    settings_notice: String,
 }
 
 impl TeleRouteApp {
@@ -71,6 +74,7 @@ impl TeleRouteApp {
 
         let now = Instant::now();
         let tray = build_tray(ctx.clone(), cc.egui_ctx.clone()).ok();
+        let endpoints = ctx.config.read().websocket.clone();
 
         Ok(Self {
             ctx,
@@ -85,6 +89,9 @@ impl TeleRouteApp {
             force_exit: false,
             last_page: Page::Connection,
             page_started: now,
+            cf_domains_draft: endpoints.fallback_domains.join("\n"),
+            cf_worker_domains_draft: endpoints.worker_domains.join("\n"),
+            settings_notice: String::new(),
         })
     }
 
@@ -538,81 +545,194 @@ impl TeleRouteApp {
             });
     }
     fn diagnostics_page(&mut self, ui: &mut egui::Ui) {
-        ui.heading(egui::RichText::new("Diagnostics").size(27.0).strong());
-        ui.label(egui::RichText::new("Test the local listener and upstream route independently.").weak());
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            if !self.diagnostics_running && ui.button("Run full test").clicked() {
-                self.start_diagnostics();
-            }
-            if self.diagnostics_running {
-                ui.add(egui::Spinner::new());
-                ui.label("Checking DNS, Telegram routes and WebSocket fallbacks…");
-                ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
-            }
-        });
-        if let Some(r) = &self.diagnostics {
-            egui::Grid::new("diagnostics-grid").num_columns(2).striped(true).show(ui, |ui| {
-                for (k, v) in [("SOCKS5", &r.socks5), ("MTProto", &r.mtproto), ("DNS", &r.dns), ("Telegram TCP (direct)", &r.telegram_tcp), ("WebSocket (Flowseal DC route)", &r.websocket), ("Media WebSocket", &r.media_websocket), ("TCP fallback", &r.tcp_fallback), ("UDP", &r.udp), ("TUN", &r.tun), ("Call transport", &r.call_transport)] {
-                    ui.strong(k);
-                    let value = v.as_str();
-                    let lower = value.to_ascii_lowercase();
-                    let color = if lower.contains("ok") || lower.contains("listening") || lower.contains("available") || lower == "active" {
-                        egui::Color32::from_rgb(83, 190, 130)
-                    } else if lower.contains("failed") || lower.contains("blocked") || lower.contains("unavailable") {
-                        egui::Color32::from_rgb(225, 95, 95)
-                    } else if lower.contains("stopped") || lower.contains("not running") || lower.contains("not listening") {
-                        egui::Color32::from_rgb(150, 158, 171)
+        page_heading(
+            ui,
+            "Diagnostics",
+            "Test the local listener, Telegram WebSocket routes and media route independently.",
+        );
+        ui.add_space(10.0);
+
+        egui::Frame::new()
+            .fill(egui::Color32::from_rgb(17, 25, 38))
+            .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(41, 57, 79)))
+            .inner_margin(egui::Margin::same(14))
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if !self.diagnostics_running
+                        && ui.add_sized(
+                            [160.0, 40.0],
+                            egui::Button::new(egui::RichText::new("Run full test").strong())
+                                .fill(egui::Color32::from_rgb(34, 110, 186)),
+                        ).clicked()
+                    {
+                        self.start_diagnostics();
+                    }
+
+                    if self.diagnostics_running {
+                        ui.add(egui::Spinner::new());
+                        ui.label("Checking DNS, WSS endpoints and media fallback…");
+                        ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
                     } else {
-                        egui::Color32::from_rgb(230, 184, 92)
-                    };
-                    ui.label(egui::RichText::new(value).color(color));
-                    ui.end_row();
-                }
+                        ui.label(egui::RichText::new("Tests run in the background; the UI stays responsive.").weak());
+                    }
+                });
             });
+
+        ui.add_space(10.0);
+        if let Some(report) = &self.diagnostics {
+            let items = [
+                ("SOCKS5 listener", report.socks5.as_str()),
+                ("MTProto listener", report.mtproto.as_str()),
+                ("DNS resolution", report.dns.as_str()),
+                ("Direct Telegram TCP", report.telegram_tcp.as_str()),
+                ("WebSocket route", report.websocket.as_str()),
+                ("Media WebSocket", report.media_websocket.as_str()),
+                ("TCP fallback", report.tcp_fallback.as_str()),
+                ("UDP socket", report.udp.as_str()),
+                ("TUN adapter", report.tun.as_str()),
+                ("Call transport", report.call_transport.as_str()),
+            ];
+
+            let columns = ((ui.available_width() / 240.0).floor() as usize).clamp(1, 3);
+            for row in items.chunks(columns) {
+                ui.columns(row.len(), |cols| {
+                    for (index, (title, value)) in row.iter().enumerate() {
+                        egui::Frame::new()
+                            .fill(egui::Color32::from_rgb(19, 27, 40))
+                            .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(40, 54, 74)))
+                            .inner_margin(egui::Margin::same(13))
+                            .show(&mut cols[index], |ui| {
+                                ui.label(egui::RichText::new(*title).size(11.0).strong().color(egui::Color32::from_rgb(130, 151, 178)));
+                                ui.add_space(4.0);
+                                ui.label(egui::RichText::new(*value).strong().color(diagnostic_color(value)));
+                            });
+                    }
+                });
+                ui.add_space(7.0);
+            });
+
+            ui.add_space(4.0);
+            ui.small("A successful WSS handshake confirms route availability, but does not prove that a full photo download or voice/video call works end-to-end.");
+        } else {
+            empty_state(
+                ui,
+                "No diagnostic run yet",
+                "Run the test to see which route is reachable and which part is failing.",
+            );
         }
-        else { ui.label("No diagnostic run yet."); }
     }
 
     fn statistics_page(&mut self, ui: &mut egui::Ui) {
-        ui.heading(egui::RichText::new("Statistics").size(27.0).strong());
-        ui.label(egui::RichText::new("Traffic totals, transport reliability and call-path counters.").weak());
-        ui.add_space(8.0);
-        let s = self.ctx.snapshot();
+        page_heading(
+            ui,
+            "Statistics",
+            "Live traffic counters and connection quality. Values update as traffic passes.",
+        );
+        ui.add_space(10.0);
+        let stats = self.ctx.snapshot();
         let values = [
-            ("Connections", s.connections.to_string()),
-            ("Active", s.active_connections.to_string()),
-            ("Bytes up", human_bytes(s.bytes_up)),
-            ("Bytes down", human_bytes(s.bytes_down)),
-            ("Packets up", s.packets_up.to_string()),
-            ("Packets down", s.packets_down.to_string()),
-            ("Reconnects", s.reconnects.to_string()),
-            ("WSS success", format!("{:.1}%", s.ws_success_rate)),
-            ("TCP fallbacks", s.tcp_fallbacks.to_string()),
-            ("UDP sessions", s.udp_sessions.to_string()),
-            ("UDP blocked", s.udp_blocked.to_string()),
-            ("Call bytes up", human_bytes(s.call_bytes_up)),
-            ("Call bytes down", human_bytes(s.call_bytes_down)),
-            ("Call jitter", s.call_jitter_ms.map(|v| format!("{v} ms")).unwrap_or_else(|| "—".into())),
-            ("Call packet loss", "—".into()),
+            ("WSS route latency", stats.ping_ms.map(|v| format!("{v} ms")).unwrap_or_else(|| "—".into())),
+            ("Total connections", stats.connections.to_string()),
+            ("Active connections", stats.active_connections.to_string()),
+            ("Upload", human_bytes(stats.bytes_up)),
+            ("Download", human_bytes(stats.bytes_down)),
+            ("Packets sent", stats.packets_up.to_string()),
+            ("Packets received", stats.packets_down.to_string()),
+            ("WSS success rate", format!("{:.1}%", stats.ws_success_rate)),
+            ("TCP fallbacks", stats.tcp_fallbacks.to_string()),
+            ("UDP sessions", stats.udp_sessions.to_string()),
+            ("UDP blocked", stats.udp_blocked.to_string()),
+            ("Call upload", human_bytes(stats.call_bytes_up)),
+            ("Call download", human_bytes(stats.call_bytes_down)),
+            ("Call jitter", stats.call_jitter_ms.map(|v| format!("{v} ms")).unwrap_or_else(|| "—".into())),
         ];
-        let columns = ((ui.available_width() / 220.0).floor() as usize).clamp(1, 4);
+        let columns = ((ui.available_width() / 230.0).floor() as usize).clamp(1, 4);
         for row in values.chunks(columns) {
             ui.columns(row.len(), |cols| {
-                for (i, (title, value)) in row.iter().enumerate() {
-                    responsive_card(&mut cols[i], title, value);
+                for (index, (title, value)) in row.iter().enumerate() {
+                    responsive_card(&mut cols[index], title, value);
                 }
             });
+            ui.add_space(7.0);
         }
+
+        ui.add_space(8.0);
+        egui::Frame::new()
+            .fill(egui::Color32::from_rgb(16, 23, 34))
+            .inner_margin(egui::Margin::same(12))
+            .show(ui, |ui| {
+                ui.label(egui::RichText::new("About latency").strong().color(egui::Color32::from_rgb(118, 184, 255)));
+                ui.label("The latency value is the time needed to establish a WebSocket route. It is not an ICMP ping or an end-to-end Telegram request time.");
+            });
     }
 
     fn logs_page(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Logs"); ui.horizontal(|ui| { if ui.button("Refresh").clicked() { self.refresh_logs(); } if ui.button("Clear").clicked() { self.logs_cache.clear(); } if ui.button("Open logs folder").clicked() { let _ = std::process::Command::new("explorer").arg(crate::config::AppConfig::logs_dir()).spawn(); } });
-        egui::ScrollArea::vertical().show(ui, |ui| { ui.monospace(&self.logs_cache); });
+        page_heading(
+            ui,
+            "Logs",
+            "Recent application events and route failures. Secrets and message contents are not shown intentionally.",
+        );
+        ui.add_space(10.0);
+
+        egui::Frame::new()
+            .fill(egui::Color32::from_rgb(17, 25, 38))
+            .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(41, 57, 79)))
+            .inner_margin(egui::Margin::same(12))
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("Refresh").clicked() {
+                        self.refresh_logs();
+                    }
+                    if ui.button("Clear view").clicked() {
+                        self.logs_cache.clear();
+                    }
+                    if ui.button("Open log folder").clicked() {
+                        let _ = std::process::Command::new("explorer")
+                            .arg(crate::config::AppConfig::logs_dir())
+                            .spawn();
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(egui::RichText::new(format!("{} lines", self.logs_cache.lines().count())).weak());
+                    });
+                });
+            });
+
+        ui.add_space(8.0);
+        egui::Frame::new()
+            .fill(egui::Color32::from_rgb(9, 13, 21))
+            .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(35, 47, 65)))
+            .inner_margin(egui::Margin::same(10))
+            .show(ui, |ui| {
+                if self.logs_cache.is_empty() {
+                    empty_state(ui, "No log lines loaded", "Press Refresh to read the latest log file.");
+                } else {
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .stick_to_bottom(true)
+                        .show(ui, |ui| {
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(&self.logs_cache)
+                                        .monospace()
+                                        .size(12.0)
+                                        .color(egui::Color32::from_rgb(190, 207, 226)),
+                                )
+                                .selectable(true)
+                                .wrap(),
+                            );
+                        });
+                }
+            });
     }
 
     fn settings_page(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Settings"); let mut cfg = self.ctx.config.write();
+        page_heading(
+            ui,
+            "Settings",
+            "Configure Telegram integration, transport fallbacks and Windows behavior.",
+        );
+        let mut cfg = self.ctx.config.write();
+        let mut save_requested = false;
         ui.collapsing("General", |ui| {
             ui.checkbox(&mut cfg.autostart.start_with_windows,"Start with Windows");
             ui.checkbox(&mut cfg.autostart.start_connected,"Start connected");
@@ -791,11 +911,73 @@ impl TeleRouteApp {
             });
             ui.label("Example secret: 32 hexadecimal characters.");
         });
-        ui.collapsing("WebSocket", |ui| { ui.add(egui::Slider::new(&mut cfg.timeouts.connect_ms, 500..=15000).text("Connect timeout ms")); ui.add(egui::Slider::new(&mut cfg.timeouts.reconnect_ms, 100..=10000).text("Reconnect delay ms")); ui.label("Endpoint templates are configured in config.toml."); });
+        ui.collapsing("Cloudflare Proxy", |ui| {
+            ui.checkbox(&mut cfg.websocket.cfproxy_enabled, "Enable Cloudflare-proxied WebSocket fallbacks");
+            ui.label("CF Proxy domains are base domains. TeleRoute connects to kws{DC}.<domain> through Cloudflare.");
+            ui.add_sized(
+                [ui.available_width().min(700.0), 92.0],
+                egui::TextEdit::multiline(&mut self.cf_domains_draft)
+                    .desired_rows(4)
+                    .hint_text("One base domain per line"),
+            );
+            ui.add_space(6.0);
+            ui.label("Optional Cloudflare Worker TCP tunnels");
+            ui.label("Worker domains must be deployed separately and respond to /apiws?dst=...&dc=...");
+            ui.add_sized(
+                [ui.available_width().min(700.0), 54.0],
+                egui::TextEdit::multiline(&mut self.cf_worker_domains_draft)
+                    .desired_rows(2)
+                    .hint_text("worker-name.username.workers.dev"),
+            );
+            ui.horizontal_wrapped(|ui| {
+                if ui.button("Restore built-in CF domains").clicked() {
+                    self.cf_domains_draft = crate::config::AppConfig::default().websocket.fallback_domains.join("\n");
+                    cfg.websocket.cfproxy_enabled = true;
+                }
+                ui.label(egui::RichText::new(format!(
+                    "{} CF domains · {} Worker domains",
+                    parse_domain_list(&self.cf_domains_draft).len(),
+                    parse_domain_list(&self.cf_worker_domains_draft).len()
+                )).weak());
+            });
+        });
+        ui.collapsing("WebSocket", |ui| {
+            ui.add(egui::Slider::new(&mut cfg.timeouts.connect_ms, 500..=15000).text("Configured connect timeout ms"));
+            ui.add(egui::Slider::new(&mut cfg.timeouts.reconnect_ms, 100..=10000).text("Reconnect delay ms"));
+            ui.label("Initial WSS route attempts use a short cap, then quickly fall back instead of waiting through every domain.");
+            ui.label("Endpoint templates are configured in config.toml.");
+        });
         ui.collapsing("Routing", |ui| { for mode in [Mode::Proxy,Mode::Calls,Mode::Full,Mode::Mtproto] { ui.radio_value(&mut cfg.routing.mode, mode, format!("{mode:?}")); } ui.checkbox(&mut cfg.routing.telegram_only,"Telegram-only UDP routing"); ui.checkbox(&mut cfg.routing.direct_udp_fallback,"Direct UDP fallback"); ui.checkbox(&mut cfg.routing.relay_udp_fallback,"QUIC relay fallback"); ui.checkbox(&mut cfg.routing.route_all_traffic,"Route all traffic (requires a future full TCP userspace stack; disabled now)"); });
         ui.collapsing("TUN", |ui| { ui.checkbox(&mut cfg.tun.enabled,"Enable TUN"); ui.add(egui::Slider::new(&mut cfg.tun.mtu, 576..=1500).text("MTU")); ui.add_sized([ui.available_width().min(360.0), 28.0], egui::TextEdit::singleline(&mut cfg.tun.adapter_name)); ui.label(format!("Telegram UDP CIDRs: {}",cfg.tun.telegram_udp_cidrs.join(", "))); });
         ui.collapsing("Logging", |ui| { ui.add_sized([ui.available_width().min(360.0), 28.0], egui::TextEdit::singleline(&mut cfg.logging.level)); ui.add(egui::Slider::new(&mut cfg.logging.keep_files,1..=20).text("Retained files")); });
-        if ui.button("Save settings").clicked() { let _ = self.ctx.save_config(); }
+        if ui.add_sized(
+            [ui.available_width().min(220.0), 40.0],
+            egui::Button::new(egui::RichText::new("Save settings").strong())
+                .fill(egui::Color32::from_rgb(34, 110, 186)),
+        ).clicked() {
+            cfg.websocket.fallback_domains = parse_domain_list(&self.cf_domains_draft);
+            cfg.websocket.worker_domains = parse_domain_list(&self.cf_worker_domains_draft);
+            save_requested = true;
+        }
+        drop(cfg);
+
+        if save_requested {
+            match self.ctx.save_config() {
+                Ok(()) => self.settings_notice = "Settings saved successfully.".into(),
+                Err(error) => self.settings_notice = format!("Could not save settings: {error}"),
+            }
+        }
+
+        if !self.settings_notice.is_empty() {
+            ui.add_space(7.0);
+            ui.label(egui::RichText::new(&self.settings_notice).color(
+                if self.settings_notice.starts_with("Settings saved") {
+                    egui::Color32::from_rgb(82, 205, 145)
+                } else {
+                    egui::Color32::from_rgb(238, 103, 110)
+                }
+            ));
+        }
     }
 }
 
@@ -803,6 +985,64 @@ fn generate_random_secret() -> String {
     let mut bytes = [0u8; 16];
     rng().fill_bytes(&mut bytes);
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn page_heading(ui: &mut egui::Ui, title: &str, subtitle: &str) {
+    ui.heading(egui::RichText::new(title).size(27.0).strong());
+    ui.label(egui::RichText::new(subtitle).size(13.0).weak());
+}
+
+fn empty_state(ui: &mut egui::Ui, title: &str, message: &str) {
+    ui.vertical_centered(|ui| {
+        ui.add_space(14.0);
+        ui.label(egui::RichText::new(title).size(16.0).strong().color(egui::Color32::from_rgb(177, 200, 226)));
+        ui.add_space(4.0);
+        ui.label(egui::RichText::new(message).weak());
+        ui.add_space(14.0);
+    });
+}
+
+fn diagnostic_color(value: &str) -> egui::Color32 {
+    let lower = value.to_ascii_lowercase();
+    if lower.contains("ok") || lower.contains("ready") || lower.contains("listening")
+        || lower.contains("available") || lower == "active"
+    {
+        egui::Color32::from_rgb(82, 205, 145)
+    } else if lower.contains("failed") || lower.contains("blocked")
+        || lower.contains("unavailable") || lower.contains("error")
+    {
+        egui::Color32::from_rgb(238, 103, 110)
+    } else if lower.contains("stopped") || lower.contains("not running")
+        || lower.contains("not listening") || lower.contains("inactive")
+    {
+        egui::Color32::from_rgb(155, 167, 184)
+    } else {
+        egui::Color32::from_rgb(242, 189, 91)
+    }
+}
+
+fn parse_domain_list(text: &str) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut result = Vec::new();
+    for item in text.split(|character: char| {
+        character == ',' || character == ';' || character.is_whitespace()
+    }) {
+        let domain = item.trim().trim_end_matches('.').to_ascii_lowercase();
+        if domain.is_empty()
+            || !domain.contains('.')
+            || domain.contains('/')
+            || domain.contains(':')
+            || domain.chars().any(|character| {
+                !(character.is_ascii_alphanumeric() || character == '.' || character == '-')
+            })
+        {
+            continue;
+        }
+        if seen.insert(domain.clone()) {
+            result.push(domain);
+        }
+    }
+    result
 }
 
 fn responsive_card(ui: &mut egui::Ui, title: &str, value: &str) {
