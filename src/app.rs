@@ -243,7 +243,7 @@ impl AppContext {
                             Ok(Ok(tun)) => {
                                 tun_telemetry.write().tun = "ACTIVE".into();
                                 tun_telemetry.write().udp = "READY".into();
-                                tun_telemetry.write().calls = "TUN ACTIVE; CALL NOT VERIFIED".into();
+                                tun_telemetry.write().calls = "MEDIA WSS CHECKING".into();
                                 tokio::spawn(async move {
                                     let _ = AssertUnwindSafe(tun.run(tun_shutdown))
                                         .catch_unwind()
@@ -253,13 +253,13 @@ impl AppContext {
                             Ok(Err(e)) => {
                                 tun_telemetry.write().tun = "FAILED".into();
                                 tun_telemetry.write().udp = "UNAVAILABLE".into();
-                                tun_telemetry.write().calls = "WS media still available".into();
+                                tun_telemetry.write().calls = "MEDIA WSS CHECKING".into();
                                 tun_telemetry.write().error = format!("Optional TUN initialization failed: {e}");
                             }
                             Err(panic) => {
                                 tun_telemetry.write().tun = "FAILED".into();
                                 tun_telemetry.write().udp = "UNAVAILABLE".into();
-                                tun_telemetry.write().calls = "WS media still available".into();
+                                tun_telemetry.write().calls = "MEDIA WSS CHECKING".into();
                                 tracing::error!(?panic, "optional TUN task panicked");
                             }
                         }
@@ -268,7 +268,7 @@ impl AppContext {
             } else {
                 telemetry.write().tun = "NOT REQUIRED".into();
                 telemetry.write().udp = "NOT REQUIRED".into();
-                telemetry.write().calls = "MEDIA WSS NOT VERIFIED".into();
+                telemetry.write().calls = "MEDIA WSS CHECKING".into();
             }
 
             {
@@ -278,6 +278,57 @@ impl AppContext {
                 t.dc = "automatic".into();
                 t.error.clear();
             }
+
+            // "Connected" above means the local listener is running. Independently
+            // check the real media WSS route and measure its setup latency so the
+            // dashboard does not stay stuck at "NOT VERIFIED" or an empty ping.
+            let monitor_config = config.clone();
+            let monitor_stats = stats.clone();
+            let monitor_telemetry = telemetry.clone();
+            let monitor_shutdown = token.child_token();
+            tokio::spawn(async move {
+                loop {
+                    if monitor_shutdown.is_cancelled() {
+                        break;
+                    }
+
+                    let result = tokio::time::timeout(
+                        std::time::Duration::from_secs(8),
+                        crate::websocket::probe_media_latency(&monitor_config),
+                    )
+                    .await;
+
+                    if monitor_shutdown.is_cancelled() {
+                        break;
+                    }
+
+                    match result {
+                        Ok(Some(latency_ms)) => {
+                            monitor_stats.ping_ms.store(
+                                latency_ms.max(1),
+                                std::sync::atomic::Ordering::Relaxed,
+                            );
+                            let mut status = monitor_telemetry.write();
+                            if status.status != ConnectionStatus::Disconnected {
+                                status.calls = "MEDIA WSS READY · CALL NOT END-TO-END TESTED".into();
+                            }
+                            tracing::info!(latency_ms, "Telegram media WSS route is reachable");
+                        }
+                        Ok(None) | Err(_) => {
+                            let mut status = monitor_telemetry.write();
+                            if status.status != ConnectionStatus::Disconnected {
+                                status.calls = "MEDIA WSS FAILED".into();
+                            }
+                            tracing::warn!("Telegram media WSS route probe failed");
+                        }
+                    }
+
+                    tokio::select! {
+                        _ = monitor_shutdown.cancelled() => break,
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(45)) => {}
+                    }
+                }
+            });
 
             info!("Telegram frontend ready at {frontend_addr}");
         });
