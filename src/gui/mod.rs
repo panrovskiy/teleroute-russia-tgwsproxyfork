@@ -604,7 +604,7 @@ impl TeleRouteApp {
                     }
                 });
                 ui.add_space(7.0);
-            });
+            }
 
             ui.add_space(4.0);
             ui.small("A successful WSS handshake confirms route availability, but does not prove that a full photo download or voice/video call works end-to-end.");
