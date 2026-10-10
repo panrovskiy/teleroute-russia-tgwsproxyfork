@@ -37,9 +37,12 @@ pub fn test_ipv4(id: u16) -> Option<IpAddr> {
 }
 
 /// WSS bridge targets from Flowseal's default DC redirect configuration.
+/// The known-good redirect is only for DC4. Redirecting DC2 to the same
+/// IP can make media transfers fail for some Telegram accounts; DC2 should
+/// use its own default address instead.
 pub fn websocket_target_ipv4(id: u16) -> Option<IpAddr> {
     match id {
-        2 | 4 | 203 => Some("149.154.167.220".parse().expect("constant IPv4 address")),
+        4 => Some("149.154.167.220".parse().expect("constant IPv4 address")),
         _ => default_ipv4(id),
     }
 }
@@ -68,4 +71,34 @@ pub fn classify_ip(ip: IpAddr) -> Option<u16> {
 pub fn is_probable_telegram_host(host: &str) -> bool {
     let h = host.to_ascii_lowercase();
     h.ends_with(".telegram.org") || h.ends_with(".t.me") || h.contains("telegram")
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_dc4_uses_the_redirect_ip() {
+        assert_eq!(
+            websocket_target_ipv4(2),
+            Some("149.154.167.51".parse().unwrap())
+        );
+        assert_eq!(
+            websocket_target_ipv4(4),
+            Some("149.154.167.220".parse().unwrap())
+        );
+        assert_eq!(
+            websocket_target_ipv4(3),
+            Some("149.154.175.100".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn test_dc_address_override_still_wins() {
+        assert_eq!(
+            websocket_target_ipv4_for(2, true),
+            Some("149.154.167.40".parse().unwrap())
+        );
+    }
 }
