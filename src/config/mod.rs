@@ -72,13 +72,6 @@ pub struct EndpointConfig {
     pub templates: Vec<String>,
     pub path: String,
     pub pool_size: usize,
-    #[serde(default = "default_true")]
-    pub cfproxy_enabled: bool,
-    /// Optional domains of a separately deployed Cloudflare Worker TCP tunnel.
-    /// These are not interchangeable with CF-proxied base domains below.
-    #[serde(default)]
-    pub worker_domains: Vec<String>,
-    /// Base domains where kws{DC}.<domain> resolves through Cloudflare's proxy.
     #[serde(default = "default_cfproxy_domains")]
     pub fallback_domains: Vec<String>,
 }
@@ -91,8 +84,6 @@ impl Default for EndpointConfig {
             ],
             path: "/apiws".into(),
             pool_size: 1,
-            cfproxy_enabled: true,
-            worker_domains: Vec::new(),
             fallback_domains: default_cfproxy_domains(),
         }
     }
@@ -297,8 +288,6 @@ mod tests {
         assert_eq!(decoded.proxy.port, 1080);
         assert_eq!(decoded.schema_version, CURRENT_CONFIG_VERSION);
         assert_eq!(decoded.telegram.frontend, TelegramFrontend::MtprotoWs);
-        assert!(decoded.websocket.cfproxy_enabled);
-        assert!(decoded.websocket.worker_domains.is_empty());
         assert!(!decoded.websocket.fallback_domains.is_empty());
         assert!(decoded.telegram.auto_configure);
         assert!(decoded.telegram.configured_proxy.is_none());

@@ -44,8 +44,6 @@ struct TeleRouteApp {
     force_exit: bool,
     last_page: Page,
     page_started: Instant,
-    cf_domains_draft: String,
-    cf_worker_domains_draft: String,
     settings_notice: String,
 }
 
@@ -74,7 +72,6 @@ impl TeleRouteApp {
 
         let now = Instant::now();
         let tray = build_tray(ctx.clone(), cc.egui_ctx.clone()).ok();
-        let endpoints = ctx.config.read().websocket.clone();
 
         Ok(Self {
             ctx,
@@ -89,8 +86,6 @@ impl TeleRouteApp {
             force_exit: false,
             last_page: Page::Connection,
             page_started: now,
-            cf_domains_draft: endpoints.fallback_domains.join("\n"),
-            cf_worker_domains_draft: endpoints.worker_domains.join("\n"),
             settings_notice: String::new(),
         })
     }
@@ -911,36 +906,6 @@ impl TeleRouteApp {
             });
             ui.label("Example secret: 32 hexadecimal characters.");
         });
-        ui.collapsing("Cloudflare Proxy", |ui| {
-            ui.checkbox(&mut cfg.websocket.cfproxy_enabled, "Enable Cloudflare-proxied WebSocket fallbacks");
-            ui.label("CF Proxy domains are base domains. TeleRoute connects to kws{DC}.<domain> through Cloudflare.");
-            ui.add_sized(
-                [ui.available_width().min(700.0), 92.0],
-                egui::TextEdit::multiline(&mut self.cf_domains_draft)
-                    .desired_rows(4)
-                    .hint_text("One base domain per line"),
-            );
-            ui.add_space(6.0);
-            ui.label("Optional Cloudflare Worker TCP tunnels");
-            ui.label("Worker domains must be deployed separately and respond to /apiws?dst=...&dc=...");
-            ui.add_sized(
-                [ui.available_width().min(700.0), 54.0],
-                egui::TextEdit::multiline(&mut self.cf_worker_domains_draft)
-                    .desired_rows(2)
-                    .hint_text("worker-name.username.workers.dev"),
-            );
-            ui.horizontal_wrapped(|ui| {
-                if ui.button("Restore built-in CF domains").clicked() {
-                    self.cf_domains_draft = crate::config::AppConfig::default().websocket.fallback_domains.join("\n");
-                    cfg.websocket.cfproxy_enabled = true;
-                }
-                ui.label(egui::RichText::new(format!(
-                    "{} CF domains · {} Worker domains",
-                    parse_domain_list(&self.cf_domains_draft).len(),
-                    parse_domain_list(&self.cf_worker_domains_draft).len()
-                )).weak());
-            });
-        });
         ui.collapsing("WebSocket", |ui| {
             ui.add(egui::Slider::new(&mut cfg.timeouts.connect_ms, 500..=15000).text("Configured connect timeout ms"));
             ui.add(egui::Slider::new(&mut cfg.timeouts.reconnect_ms, 100..=10000).text("Reconnect delay ms"));
@@ -955,8 +920,6 @@ impl TeleRouteApp {
             egui::Button::new(egui::RichText::new("Save settings").strong())
                 .fill(egui::Color32::from_rgb(34, 110, 186)),
         ).clicked() {
-            cfg.websocket.fallback_domains = parse_domain_list(&self.cf_domains_draft);
-            cfg.websocket.worker_domains = parse_domain_list(&self.cf_worker_domains_draft);
             save_requested = true;
         }
         drop(cfg);
@@ -1019,30 +982,6 @@ fn diagnostic_color(value: &str) -> egui::Color32 {
     } else {
         egui::Color32::from_rgb(242, 189, 91)
     }
-}
-
-fn parse_domain_list(text: &str) -> Vec<String> {
-    let mut seen = std::collections::HashSet::new();
-    let mut result = Vec::new();
-    for item in text.split(|character: char| {
-        character == ',' || character == ';' || character.is_whitespace()
-    }) {
-        let domain = item.trim().trim_end_matches('.').to_ascii_lowercase();
-        if domain.is_empty()
-            || !domain.contains('.')
-            || domain.contains('/')
-            || domain.contains(':')
-            || domain.chars().any(|character| {
-                !(character.is_ascii_alphanumeric() || character == '.' || character == '-')
-            })
-        {
-            continue;
-        }
-        if seen.insert(domain.clone()) {
-            result.push(domain);
-        }
-    }
-    result
 }
 
 fn responsive_card(ui: &mut egui::Ui, title: &str, value: &str) {
