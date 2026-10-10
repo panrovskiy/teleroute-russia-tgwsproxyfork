@@ -12,10 +12,25 @@ pub type WsStream = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeT
 #[derive(Clone, Default)]
 pub struct WebSocketPool {
     inner: Arc<Mutex<HashMap<u16, Vec<WsStream>>>>,
+    // Remember a recently successful route per DC/media/test-DC tuple so
+    // subsequent Telegram connections do not repeat cold endpoint discovery.
+    preferred: Arc<Mutex<HashMap<(u16, bool, bool), String>>>,
 }
 impl WebSocketPool {
     pub async fn take(&self, dc: u16) -> Option<WsStream> {
         self.inner.lock().await.get_mut(&dc).and_then(|v| v.pop())
+    }
+
+    async fn preferred(&self, dc: u16, media: bool, is_test_dc: bool) -> Option<String> {
+        self.preferred.lock().await.get(&(dc, media, is_test_dc)).cloned()
+    }
+
+    async fn remember(&self, dc: u16, media: bool, is_test_dc: bool, url: &str) {
+        self.preferred.lock().await.insert((dc, media, is_test_dc), url.to_owned());
+    }
+
+    async fn forget(&self, dc: u16, media: bool, is_test_dc: bool) {
+        self.preferred.lock().await.remove(&(dc, media, is_test_dc));
     }
 
     pub async fn warmup(&self, config: &AppConfig) {
@@ -38,10 +53,13 @@ impl WebSocketPool {
                 let target_ip = target_ip_for_url(&url, dc, false);
 
                 match timeout(
-                    Duration::from_millis(config.timeouts.connect_ms),
+                    Duration::from_millis(config.timeouts.connect_ms.min(1800).max(500)),
                     transport.connect(&url, dc, target_ip),
                 ).await {
-                    Ok(Ok((ws, _))) => self.inner.lock().await.entry(dc).or_default().push(ws),
+                    Ok(Ok((ws, _))) => {
+                        self.remember(dc, false, false, &url).await;
+                        self.inner.lock().await.entry(dc).or_default().push(ws);
+                    }
                     _ => break,
                 }
             }
@@ -101,8 +119,41 @@ impl WebSocketTransport {
         // Race all configured WSS endpoints instead of trying them serially.
         // The first successful TLS/WebSocket handshake wins, reducing startup
         // latency significantly on networks where one endpoint is slow/blocked.
-        let endpoints = self.endpoints(dc_id, media, is_test_dc);
-        let deadline = Duration::from_millis(self.config.timeouts.connect_ms);
+        let mut endpoints = self.endpoints(dc_id, media, is_test_dc);
+
+        // Try the last known-good endpoint alone first. On a healthy route this
+        // avoids opening several redundant TLS/WebSocket handshakes for every
+        // Telegram TCP connection.
+        if let Some(preferred_url) = self.pool.preferred(dc_id, media, is_test_dc).await {
+            if endpoints.iter().any(|candidate| candidate == &preferred_url) {
+                let preferred_timeout =
+                    Duration::from_millis(self.config.timeouts.connect_ms.min(1200).max(500));
+                let target_ip = target_ip_for_url(&preferred_url, dc_id, is_test_dc);
+                if let Ok(Ok((mut ws, _))) = timeout(
+                    preferred_timeout,
+                    self.connect(&preferred_url, dc_id, target_ip),
+                ).await {
+                    self.pool.remember(dc_id, media, is_test_dc, &preferred_url).await;
+                    self.stats.ws_success.fetch_add(1, Ordering::Relaxed);
+                    self.stats.current_dc.store(dc_id as i64, Ordering::Relaxed);
+                    self.stats.current_transport.store(1, Ordering::Relaxed);
+                    info!(dc = dc_id, media, url = %preferred_url, "reused known-good WSS route");
+
+                    let upstream = obfs2::new_client(client_obfs.parsed.protocol, relay_dc)?;
+                    ws.send(Message::Binary(upstream.wire_header.to_vec().into())).await?;
+                    return self.pipe(client, client_obfs, &mut ws, upstream).await;
+                }
+            }
+
+            self.pool.forget(dc_id, media, is_test_dc).await;
+            endpoints.retain(|candidate| candidate != &preferred_url);
+        }
+
+        // Cap the wait per endpoint even if config.toml contains a larger
+        // value; four concurrent attempts still leave slower fallback routes
+        // a chance, but a dead hostname cannot hold startup for many seconds.
+        let deadline =
+            Duration::from_millis(self.config.timeouts.connect_ms.min(1800).max(500));
         let mut remaining = endpoints.into_iter();
         let mut attempts = futures_util::stream::FuturesUnordered::new();
 
@@ -124,6 +175,7 @@ impl WebSocketTransport {
         while let Some((url, result)) = attempts.next().await {
             match result {
                 Ok(Ok((mut ws, _))) => {
+                    self.pool.remember(dc_id, media, is_test_dc, &url).await;
                     self.stats.ws_success.fetch_add(1, Ordering::Relaxed);
                     self.stats.current_dc.store(dc_id as i64, Ordering::Relaxed);
                     self.stats.current_transport.store(1, Ordering::Relaxed);
@@ -156,7 +208,7 @@ impl WebSocketTransport {
         let direct_ip = if is_test_dc { dc::test_ipv4(dc_id) } else { dc::default_ipv4(dc_id) };
         if let Some(ip) = direct_ip {
             if let Ok(Ok(mut upstream_socket)) = timeout(
-                Duration::from_millis(3500),
+                Duration::from_millis(2200),
                 TcpStream::connect(SocketAddr::new(ip, 443)),
             ).await {
                 let relay = obfs2::new_client(client_obfs.parsed.protocol, relay_dc)?;
