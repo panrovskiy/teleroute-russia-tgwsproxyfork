@@ -1,7 +1,7 @@
 use crate::{config::AppConfig, statistics::Statistics, telegram::{dc, obfs2::{self, ClientObfs, ServerObfs}}};
 use futures_util::{FutureExt, SinkExt, StreamExt};
 use ctr::cipher::StreamCipher;
-use std::{collections::HashMap, net::SocketAddr, sync::{atomic::Ordering, Arc}, time::Duration};
+use std::{collections::HashMap, net::SocketAddr, sync::{atomic::Ordering, Arc}, time::{Duration, Instant}};
 use tokio::sync::Mutex;
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{lookup_host, TcpStream}, time::timeout};
 use tokio_tungstenite::{client_async_tls_with_config, tungstenite::{client::IntoClientRequest, http::HeaderValue, Message}};
@@ -129,10 +129,15 @@ impl WebSocketTransport {
                 let preferred_timeout =
                     Duration::from_millis(self.config.timeouts.connect_ms.min(1200).max(500));
                 let target_ip = target_ip_for_url(&preferred_url, dc_id, is_test_dc);
+                let connect_started = Instant::now();
                 if let Ok(Ok((mut ws, _))) = timeout(
                     preferred_timeout,
                     self.connect(&preferred_url, dc_id, target_ip),
                 ).await {
+                    self.stats.ping_ms.store(
+                        connect_started.elapsed().as_millis().max(1) as i64,
+                        Ordering::Relaxed,
+                    );
                     self.pool.remember(dc_id, media, is_test_dc, &preferred_url).await;
                     self.stats.ws_success.fetch_add(1, Ordering::Relaxed);
                     self.stats.current_dc.store(dc_id as i64, Ordering::Relaxed);
@@ -164,17 +169,20 @@ impl WebSocketTransport {
                 let attempt_url = url.clone();
                 let target_ip = target_ip_for_url(&url, dc_id, is_test_dc);
                 attempts.push(async move {
+                    let started = Instant::now();
                     let result = timeout(deadline, self.connect(&attempt_url, dc_id, target_ip)).await;
-                    (url, result)
+                    let elapsed_ms = started.elapsed().as_millis().max(1) as i64;
+                    (url, result, elapsed_ms)
                 }.boxed());
             }
         }
 
         let mut last_error: Option<anyhow::Error> = None;
 
-        while let Some((url, result)) = attempts.next().await {
+        while let Some((url, result, elapsed_ms)) = attempts.next().await {
             match result {
                 Ok(Ok((mut ws, _))) => {
+                    self.stats.ping_ms.store(elapsed_ms, Ordering::Relaxed);
                     self.pool.remember(dc_id, media, is_test_dc, &url).await;
                     self.stats.ws_success.fetch_add(1, Ordering::Relaxed);
                     self.stats.current_dc.store(dc_id as i64, Ordering::Relaxed);
@@ -193,8 +201,10 @@ impl WebSocketTransport {
                 let attempt_url = next_url.clone();
                 let target_ip = target_ip_for_url(&next_url, dc_id, is_test_dc);
                 attempts.push(async move {
+                    let started = Instant::now();
                     let result = timeout(deadline, self.connect(&attempt_url, dc_id, target_ip)).await;
-                    (next_url, result)
+                    let elapsed_ms = started.elapsed().as_millis().max(1) as i64;
+                    (next_url, result, elapsed_ms)
                 }.boxed());
             }
         }
@@ -600,17 +610,24 @@ pub async fn direct_tcp_bridge(
 }
 
 pub async fn probe(config: &AppConfig) -> bool {
-    probe_route(config, false).await
+    probe_route(config, false).await.is_some()
 }
 
 pub async fn probe_media(config: &AppConfig) -> bool {
+    probe_route(config, true).await.is_some()
+}
+
+/// Measures the time needed to establish a usable Telegram WSS session.
+/// This is route-connection latency, not an ICMP echo ping.
+pub async fn probe_media_latency(config: &AppConfig) -> Option<i64> {
     probe_route(config, true).await
 }
 
-async fn probe_route(config: &AppConfig, media: bool) -> bool {
+async fn probe_route(config: &AppConfig, media: bool) -> Option<i64> {
     let transport = WebSocketTransport::new(config.clone(), Arc::new(Statistics::default()));
-    let mut remaining = transport.endpoints(2, media, false).into_iter().take(12);
+    let mut remaining = transport.endpoints(2, media, false).into_iter().take(8);
     let mut attempts = futures_util::stream::FuturesUnordered::new();
+    let deadline = Duration::from_millis(config.timeouts.connect_ms.min(1800).max(500));
 
     for _ in 0..4 {
         if let Some(url) = remaining.next() {
@@ -618,33 +635,34 @@ async fn probe_route(config: &AppConfig, media: bool) -> bool {
             let attempt_url = url.clone();
             let transport_ref = &transport;
             attempts.push(async move {
-                let result = timeout(
-                    Duration::from_millis(3000),
-                    transport_ref.connect(&attempt_url, 2, target),
-                ).await;
-                (url, result)
+                let started = Instant::now();
+                let result = timeout(deadline, transport_ref.connect(&attempt_url, 2, target)).await;
+                let elapsed_ms = started.elapsed().as_millis().max(1) as i64;
+                (url, result, elapsed_ms)
             }.boxed());
         }
     }
 
-    while let Some((_url, result)) = attempts.next().await {
-        if matches!(result, Ok(Ok(_))) {
-            return true;
+    while let Some((_url, result, elapsed_ms)) = attempts.next().await {
+        if let Ok(Ok((ws, _))) = result {
+            drop(ws);
+            return Some(elapsed_ms);
         }
+
         if let Some(url) = remaining.next() {
             let target = target_ip_for_url(&url, 2, false);
             let attempt_url = url.clone();
             let transport_ref = &transport;
             attempts.push(async move {
-                let result = timeout(
-                    Duration::from_millis(3000),
-                    transport_ref.connect(&attempt_url, 2, target),
-                ).await;
-                (url, result)
+                let started = Instant::now();
+                let result = timeout(deadline, transport_ref.connect(&attempt_url, 2, target)).await;
+                let elapsed_ms = started.elapsed().as_millis().max(1) as i64;
+                (url, result, elapsed_ms)
             }.boxed());
         }
     }
-    false
+
+    None
 }
 
 #[cfg(test)]
