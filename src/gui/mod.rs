@@ -63,11 +63,11 @@ impl TeleRouteApp {
         visuals.widgets.noninteractive.fg_stroke.color = egui::Color32::from_rgb(206, 218, 234);
         cc.egui_ctx.set_visuals(visuals);
 
-        let mut style = (*cc.egui_ctx.style()).clone();
+        let mut style = (*cc.egui_ctx.style_of(egui::Theme::Dark)).clone();
         style.spacing.item_spacing = egui::vec2(10.0, 10.0);
         style.spacing.button_padding = egui::vec2(12.0, 8.0);
         style.spacing.interact_size.y = 34.0;
-        cc.egui_ctx.set_style(style);
+        cc.egui_ctx.set_style_of(egui::Theme::Dark, style);
 
         let now = Instant::now();
         let tray = build_tray(ctx.clone(), cc.egui_ctx.clone()).ok();
