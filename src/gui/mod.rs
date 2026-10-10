@@ -49,15 +49,25 @@ struct TeleRouteApp {
 impl TeleRouteApp {
     fn new(cc: &eframe::CreationContext<'_>, ctx: AppContext) -> anyhow::Result<Self> {
         let mut visuals = egui::Visuals::dark();
-        visuals.panel_fill = egui::Color32::from_rgb(16, 20, 29);
-        visuals.window_fill = egui::Color32::from_rgb(20, 25, 35);
-        visuals.extreme_bg_color = egui::Color32::from_rgb(11, 14, 21);
-        visuals.faint_bg_color = egui::Color32::from_rgb(28, 35, 48);
-        visuals.selection.bg_fill = egui::Color32::from_rgb(42, 104, 169);
-        visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(31, 40, 54);
-        visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(43, 57, 76);
-        visuals.widgets.active.bg_fill = egui::Color32::from_rgb(42, 104, 169);
+        visuals.panel_fill = egui::Color32::from_rgb(12, 16, 25);
+        visuals.window_fill = egui::Color32::from_rgb(17, 23, 35);
+        visuals.extreme_bg_color = egui::Color32::from_rgb(8, 11, 18);
+        visuals.faint_bg_color = egui::Color32::from_rgb(25, 34, 49);
+        visuals.code_bg_color = egui::Color32::from_rgb(10, 14, 22);
+        visuals.hyperlink_color = egui::Color32::from_rgb(100, 183, 255);
+        visuals.selection.bg_fill = egui::Color32::from_rgb(36, 106, 181);
+        visuals.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(20, 28, 42);
+        visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(27, 38, 55);
+        visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(38, 58, 83);
+        visuals.widgets.active.bg_fill = egui::Color32::from_rgb(37, 116, 202);
+        visuals.widgets.noninteractive.fg_stroke.color = egui::Color32::from_rgb(206, 218, 234);
         cc.egui_ctx.set_visuals(visuals);
+
+        let mut style = (*cc.egui_ctx.style()).clone();
+        style.spacing.item_spacing = egui::vec2(10.0, 10.0);
+        style.spacing.button_padding = egui::vec2(12.0, 8.0);
+        style.spacing.interact_size.y = 34.0;
+        cc.egui_ctx.set_style(style);
 
         let now = Instant::now();
         let tray = build_tray(ctx.clone(), cc.egui_ctx.clone()).ok();
@@ -232,258 +242,305 @@ impl eframe::App for TeleRouteApp {
 
         let narrow = ui.available_width() < 820.0;
 
+        let header_status = self.ctx.status();
+        let (header_text, header_color) = match header_status.status {
+            ConnectionStatus::Connected => ("LOCAL LISTENER READY", egui::Color32::from_rgb(82, 205, 145)),
+            ConnectionStatus::Connecting => ("STARTING", egui::Color32::from_rgb(242, 189, 91)),
+            ConnectionStatus::Error => ("NEEDS ATTENTION", egui::Color32::from_rgb(238, 103, 110)),
+            ConnectionStatus::Disconnected => ("OFFLINE", egui::Color32::from_rgb(155, 167, 184)),
+        };
+
         egui::Panel::top("top").show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.heading("TeleRoute");
-                ui.separator();
-                ui.label("Telegram transport + low-latency UDP routing");
-            });
+            egui::Frame::new()
+                .fill(egui::Color32::from_rgb(15, 21, 32))
+                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(36, 48, 67)))
+                .inner_margin(egui::Margin::same(12))
+                .show(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        egui::Frame::new()
+                            .fill(egui::Color32::from_rgb(39, 117, 202))
+                            .inner_margin(egui::Margin::same(8))
+                            .show(ui, |ui| {
+                                ui.label(egui::RichText::new("TR").size(20.0).strong().color(egui::Color32::WHITE));
+                            });
+                        ui.vertical(|ui| {
+                            ui.heading(egui::RichText::new("TeleRoute").size(22.0).strong());
+                            ui.label(egui::RichText::new("Telegram connection manager").size(12.0).weak());
+                        });
+                        ui.add_space(12.0);
+                        ui.separator();
+                        ui.label(egui::RichText::new(header_text).strong().color(header_color));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if header_status.status == ConnectionStatus::Connected {
+                                if ui.add_sized([128.0, 38.0], egui::Button::new("Disconnect").fill(egui::Color32::from_rgb(134, 53, 68))).clicked() {
+                                    self.ctx.disconnect();
+                                }
+                            } else if header_status.status != ConnectionStatus::Connecting {
+                                if ui.add_sized([128.0, 38.0], egui::Button::new("Connect").fill(egui::Color32::from_rgb(35, 126, 92))).clicked() {
+                                    self.ctx.connect();
+                                }
+                            } else {
+                                ui.add(egui::Spinner::new());
+                            }
+                        });
+                    });
+                });
         });
 
         if !narrow {
-            egui::Panel::left("nav").min_size(178.0).show(ui, |ui| {
+            egui::Panel::left("nav").min_size(196.0).show(ui, |ui| {
                 self.navigation(ui, false);
             });
         } else {
-            egui::Frame::group(ui.style()).show(ui, |ui| {
-                egui::ScrollArea::horizontal().id_salt("compact-navigation").show(ui, |ui| {
-                    self.navigation(ui, true);
+            egui::Frame::new()
+                .fill(egui::Color32::from_rgb(14, 20, 30))
+                .inner_margin(egui::Margin::same(8))
+                .show(ui, |ui| {
+                    egui::ScrollArea::horizontal().id_salt("compact-navigation").show(ui, |ui| {
+                        self.navigation(ui, true);
+                    });
                 });
-            });
         }
 
         egui::CentralPanel::default().show(ui, |ui| {
-            ui.add_space((1.0 - page_progress) * 10.0);
-            match self.page {
-                Page::Connection => self.connection_page(ui),
-                Page::Diagnostics => self.diagnostics_page(ui),
-                Page::Statistics => self.statistics_page(ui),
-                Page::Logs => self.logs_page(ui),
-                Page::Settings => self.settings_page(ui),
-            }
+            egui::Frame::new()
+                .fill(egui::Color32::from_rgb(11, 15, 23))
+                .inner_margin(egui::Margin::same(18))
+                .show(ui, |ui| {
+                    ui.add_space((1.0 - page_progress) * 8.0);
+                    match self.page {
+                        Page::Connection => self.connection_page(ui),
+                        Page::Diagnostics => self.diagnostics_page(ui),
+                        Page::Statistics => self.statistics_page(ui),
+                        Page::Logs => self.logs_page(ui),
+                        Page::Settings => self.settings_page(ui),
+                    }
+                });
         });
     }
 }
 
 impl TeleRouteApp {
     fn navigation(&mut self, ui: &mut egui::Ui, compact: bool) {
-        if !compact {
-            ui.heading("Navigation");
-            ui.separator();
-        }
         let items = [
-            (Page::Connection, "Connection"),
+            (Page::Connection, "Overview"),
             (Page::Diagnostics, "Diagnostics"),
             (Page::Statistics, "Statistics"),
             (Page::Logs, "Logs"),
             (Page::Settings, "Settings"),
         ];
+
         if compact {
-            ui.horizontal(|ui| {
-                for (page, name) in items {
-                    ui.selectable_value(&mut self.page, page, name);
+            ui.horizontal_wrapped(|ui| {
+                for (index, (page, name)) in items.iter().enumerate() {
+                    let label = format!("{:02}  {}", index + 1, name);
+                    if ui.add_sized([132.0, 36.0], egui::Button::selectable(self.page == *page, label)).clicked() {
+                        self.page = *page;
+                    }
                 }
-                ui.separator();
-                if ui.button("Connect").clicked() { self.ctx.connect(); }
-                if ui.button("Disconnect").clicked() { self.ctx.disconnect(); }
             });
-        } else {
-            for (page, name) in items {
-                ui.add_sized([ui.available_width(), 32.0], egui::Button::selectable(self.page == page, name))
-                    .clicked()
-                    .then(|| self.page = page);
-            }
-            ui.add_space(14.0);
-            ui.horizontal(|ui| {
-                let width = ui.available_width();
-                ui.add_sized([width, 34.0], egui::Button::new("Connect")).clicked().then(|| self.ctx.connect());
-            });
-            ui.horizontal(|ui| {
-                let width = ui.available_width();
-                ui.add_sized([width, 34.0], egui::Button::new("Disconnect")).clicked().then(|| self.ctx.disconnect());
-            });
+            return;
         }
+
+        egui::Frame::new()
+            .fill(egui::Color32::from_rgb(14, 20, 30))
+            .inner_margin(egui::Margin::same(14))
+            .show(ui, |ui| {
+                ui.label(egui::RichText::new("WORKSPACE").size(11.0).strong().color(egui::Color32::from_rgb(122, 145, 174)));
+                ui.add_space(8.0);
+
+                for (index, (page, name)) in items.iter().enumerate() {
+                    let label = format!("{:02}    {}", index + 1, name);
+                    if ui.add_sized([ui.available_width(), 42.0], egui::Button::selectable(self.page == *page, label)).clicked() {
+                        self.page = *page;
+                    }
+                }
+
+                ui.add_space(18.0);
+                ui.separator();
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new("QUICK STATUS").size(11.0).strong().color(egui::Color32::from_rgb(122, 145, 174)));
+
+                let status = self.ctx.status();
+                let status_text = match status.status {
+                    ConnectionStatus::Connected => "Listener running",
+                    ConnectionStatus::Connecting => "Starting services",
+                    ConnectionStatus::Error => "Startup error",
+                    ConnectionStatus::Disconnected => "Disconnected",
+                };
+                let status_color = match status.status {
+                    ConnectionStatus::Connected => egui::Color32::from_rgb(82, 205, 145),
+                    ConnectionStatus::Connecting => egui::Color32::from_rgb(242, 189, 91),
+                    ConnectionStatus::Error => egui::Color32::from_rgb(238, 103, 110),
+                    ConnectionStatus::Disconnected => egui::Color32::from_rgb(155, 167, 184),
+                };
+
+                egui::Frame::new()
+                    .fill(egui::Color32::from_rgb(20, 29, 43))
+                    .inner_margin(egui::Margin::same(12))
+                    .show(ui, |ui| {
+                        ui.label(egui::RichText::new(status_text).strong().color(status_color));
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new(format!("Mode: {:?}", self.ctx.config.read().routing.mode)).size(12.0).weak());
+                        ui.label(egui::RichText::new(format!("Frontend: {:?}", self.ctx.config.read().telegram.frontend)).size(12.0).weak());
+                    });
+
+                ui.add_space(10.0);
+                ui.label(egui::RichText::new("A running listener does not guarantee that Telegram's upstream route is healthy.").size(11.0).weak());
+            });
     }
 
     fn connection_page(&mut self, ui: &mut egui::Ui) {
-        let t = self.ctx.status();
-        let s = self.ctx.snapshot();
-        let cfg = self.ctx.config.read().clone();
+        let telemetry = self.ctx.status();
+        let stats = self.ctx.snapshot();
+        let config = self.ctx.config.read().clone();
+        let has_payload = stats.bytes_up > 0 || stats.bytes_down > 0;
 
-        let has_payload = s.bytes_up > 0 || s.bytes_down > 0;
-        let route_transport = if s.current_transport != "—" {
-            s.current_transport.to_string()
-        } else if t.status == ConnectionStatus::Connected && !t.transport.is_empty() {
-            format!("{} · waiting for Telegram traffic", t.transport)
+        let transport_text = if stats.current_transport != "—" {
+            stats.current_transport.to_string()
+        } else if telemetry.status == ConnectionStatus::Connected {
+            "Waiting for Telegram traffic".into()
         } else {
             "—".into()
         };
-        let route_dc = s.current_dc
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| t.dc.clone());
+        let dc_text = stats.current_dc
+            .map(|value| format!("DC {value}"))
+            .unwrap_or_else(|| telemetry.dc.clone());
 
-        ui.heading(
-            egui::RichText::new("Connection")
-                .size(24.0)
-                .strong(),
-        );
-        ui.add_space(8.0);
-
-        let (status_label, mut status_color) = match t.status {
-            ConnectionStatus::Connected if has_payload => ("TRAFFIC ACTIVE", egui::Color32::from_rgb(75, 190, 120)),
-            ConnectionStatus::Connected => ("LISTENING", egui::Color32::from_rgb(230, 184, 92)),
-            ConnectionStatus::Connecting => ("CONNECTING", egui::Color32::from_rgb(235, 180, 70)),
-            ConnectionStatus::Error => ("ERROR", egui::Color32::from_rgb(225, 85, 85)),
-            ConnectionStatus::Disconnected => ("DISCONNECTED", egui::Color32::from_rgb(145, 150, 160)),
+        let (status_label, status_color, status_detail) = match telemetry.status {
+            ConnectionStatus::Connected if has_payload => (
+                "TRAFFIC ACTIVE",
+                egui::Color32::from_rgb(82, 205, 145),
+                "Telegram data is moving through the local proxy.",
+            ),
+            ConnectionStatus::Connected => (
+                "LOCAL LISTENER READY",
+                egui::Color32::from_rgb(242, 189, 91),
+                "The local port is open. The upstream route is checked separately.",
+            ),
+            ConnectionStatus::Connecting => (
+                "STARTING",
+                egui::Color32::from_rgb(242, 189, 91),
+                "Starting the local Telegram frontend.",
+            ),
+            ConnectionStatus::Error => (
+                "NEEDS ATTENTION",
+                egui::Color32::from_rgb(238, 103, 110),
+                "The frontend could not start. See the error details below.",
+            ),
+            ConnectionStatus::Disconnected => (
+                "OFFLINE",
+                egui::Color32::from_rgb(155, 167, 184),
+                "Connect to start the local Telegram frontend.",
+            ),
         };
-        if t.status == ConnectionStatus::Connected && has_payload {
-            let phase = ui.ctx().input(|input| input.time) as f32;
-            let pulse = (phase * 2.2).sin() * 0.5 + 0.5;
-            status_color = egui::Color32::from_rgb(
-                55,
-                (155.0 + pulse * 45.0) as u8,
-                (95.0 + pulse * 22.0) as u8,
-            );
-            ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
-        }
 
-        egui::Frame::group(ui.style())
-            .inner_margin(egui::Margin::same(16))
+        ui.horizontal_wrapped(|ui| {
+            ui.vertical(|ui| {
+                ui.heading(egui::RichText::new("Overview").size(27.0).strong());
+                ui.label(egui::RichText::new("Connection health, transport and live traffic").weak());
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(egui::RichText::new(format!("MODE  {:?}", config.routing.mode)).strong().color(egui::Color32::from_rgb(118, 184, 255)));
+            });
+        });
+        ui.add_space(10.0);
+
+        egui::Frame::new()
+            .fill(egui::Color32::from_rgb(19, 29, 44))
+            .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(43, 62, 86)))
+            .inner_margin(egui::Margin::same(20))
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.vertical(|ui| {
-                        ui.label(
-                            egui::RichText::new("TeleRoute")
-                                .size(13.0)
-                                .weak(),
-                        );
-                        ui.add_space(2.0);
-                        ui.label(
-                            egui::RichText::new(status_label)
-                                .size(28.0)
-                                .strong()
-                                .color(status_color),
-                        );
-                        ui.label(format!("Mode: {:?}", cfg.routing.mode));
+                        ui.label(egui::RichText::new("TELEGRAM ROUTER").size(11.0).strong().color(egui::Color32::from_rgb(129, 156, 188)));
+                        ui.add_space(3.0);
+                        ui.label(egui::RichText::new(status_label).size(24.0).strong().color(status_color));
+                        ui.add_space(3.0);
+                        ui.label(status_detail);
+                        ui.add_space(12.0);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(egui::RichText::new(format!("Frontend  {:?}", config.telegram.frontend)).strong());
+                            ui.separator();
+                            ui.label(egui::RichText::new(format!("Transport  {transport_text}")).strong());
+                            ui.separator();
+                            ui.label(egui::RichText::new(format!("Route  {dc_text}")).strong());
+                        });
                     });
 
-                    ui.add_space(24.0);
-
-                    ui.vertical(|ui| {
-                        ui.label(egui::RichText::new("Transport").weak());
-                        ui.label(egui::RichText::new(&route_transport).strong());
-                        ui.add_space(4.0);
-                        ui.label(egui::RichText::new("DC").weak());
-                        ui.label(egui::RichText::new(&route_dc).strong());
-                    });
-
-                    ui.with_layout(
-                        egui::Layout::right_to_left(egui::Align::Center),
-                        |ui| {
-                            let button_text =
-                                if t.status == ConnectionStatus::Connected { "DISCONNECT" } else { "CONNECT" };
-                            let button_fill = if t.status == ConnectionStatus::Connected {
-                                egui::Color32::from_rgb(130, 52, 67)
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let (label, fill) = if telemetry.status == ConnectionStatus::Connected {
+                            ("Disconnect", egui::Color32::from_rgb(134, 53, 68))
+                        } else {
+                            ("Connect", egui::Color32::from_rgb(35, 126, 92))
+                        };
+                        let button = egui::Button::new(egui::RichText::new(label).strong().size(16.0)).fill(fill);
+                        if ui.add_sized([150.0, 48.0], button).clicked() {
+                            if telemetry.status == ConnectionStatus::Connected {
+                                self.ctx.disconnect();
                             } else {
-                                egui::Color32::from_rgb(34, 124, 91)
-                            };
-                            let button = egui::Button::new(
-                                egui::RichText::new(button_text).strong().size(16.0),
-                            ).fill(button_fill);
-
-                            if ui
-                                .add_sized([190.0, 54.0], button)
-                                .clicked()
-                            {
-                                if t.status == ConnectionStatus::Connected {
-                                    self.ctx.disconnect();
-                                } else {
-                                    self.ctx.connect();
-                                }
+                                self.ctx.connect();
                             }
-                        },
-                    );
+                        }
+                    });
                 });
             });
 
-        ui.add_space(12.0);
+        ui.add_space(16.0);
+        ui.label(egui::RichText::new("LIVE METRICS").size(12.0).strong().color(egui::Color32::from_rgb(122, 145, 174)));
+        ui.add_space(4.0);
 
-        let cards = [
-            ("Frontend", format!("{:?}", cfg.telegram.frontend)),
-            ("MTProto", format!("{}:{}", cfg.telegram.mtproto_bind, cfg.telegram.mtproto_port)),
-            ("TUN", t.tun.clone()),
-            ("UDP", t.udp.clone()),
-            ("Calls", t.calls.clone()),
-            (
-                "Ping",
-                s.ping_ms
-                    .map(|v| format!("{v} ms"))
-                    .unwrap_or_else(|| "—".into()),
-            ),
-            ("Active", s.active_connections.to_string()),
-            ("Upload", human_bytes(s.bytes_up)),
-            ("Download", human_bytes(s.bytes_down)),
+        let values = [
+            ("WSS latency", stats.ping_ms.map(|value| format!("{value} ms")).unwrap_or_else(|| if telemetry.status == ConnectionStatus::Connected { "Checking…".into() } else { "—".into() })),
+            ("Calls / media", telemetry.calls.clone()),
+            ("TUN adapter", telemetry.tun.clone()),
+            ("UDP transport", telemetry.udp.clone()),
+            ("Active sessions", stats.active_connections.to_string()),
+            ("Upload", human_bytes(stats.bytes_up)),
+            ("Download", human_bytes(stats.bytes_down)),
+            ("MTProto endpoint", format!("{}:{}", config.telegram.mtproto_bind, config.telegram.mtproto_port)),
         ];
-
-        let columns = ((ui.available_width() / 190.0).floor() as usize).clamp(1, 4);
-
-        for row in cards.chunks(columns) {
+        let columns = ((ui.available_width() / 230.0).floor() as usize).clamp(1, 4);
+        for row in values.chunks(columns) {
             ui.columns(row.len(), |cols| {
                 for (index, (title, value)) in row.iter().enumerate() {
                     responsive_card(&mut cols[index], title, value);
                 }
             });
-            ui.add_space(6.0);
         }
 
-        if !t.error.is_empty() {
-            egui::Frame::group(ui.style())
-                .inner_margin(egui::Margin::same(12))
+        ui.add_space(12.0);
+        if !telemetry.error.is_empty() {
+            egui::Frame::new()
+                .fill(egui::Color32::from_rgb(43, 24, 31))
+                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(119, 54, 66)))
+                .inner_margin(egui::Margin::same(13))
                 .show(ui, |ui| {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(225, 85, 85),
-                        egui::RichText::new("Connection error").strong(),
-                    );
-                    ui.add_space(4.0);
-                    ui.label(&t.error);
+                    ui.label(egui::RichText::new("Connection warning").strong().color(egui::Color32::from_rgb(238, 123, 130)));
+                    ui.label(&telemetry.error);
                 });
-            ui.add_space(8.0);
         }
 
-        ui.separator();
-
-        ui.horizontal_wrapped(|ui| {
-            ui.label(egui::RichText::new("Telegram integration").strong());
-            let registered = match cfg.telegram.frontend {
-                TelegramFrontend::MtprotoWs => cfg.telegram.configured_mtproto.is_some(),
-                TelegramFrontend::Socks5 => cfg.telegram.configured_proxy.is_some(),
-            };
-            if registered {
-                ui.label(
-                    egui::RichText::new("Telegram proxy link opened")
-                        .color(egui::Color32::from_rgb(75, 190, 120)),
-                );
-            } else {
-                ui.label("Telegram proxy not configured yet");
-            }
-
-            if ui.button("Diagnostics").clicked() {
-                self.page = Page::Diagnostics;
-            }
-        });
-
-        if !has_payload && t.status == ConnectionStatus::Connected {
-            ui.colored_label(
-                egui::Color32::from_rgb(230, 184, 92),
-                "Local listener is open, but no Telegram payload has passed yet. Run Diagnostics and confirm MTProto is LISTENING and WebSocket is OK.",
-            );
-        } else {
-            ui.small("Traffic counters show Telegram data moving. Media/calls use the MTProto media WebSocket route; TUN is optional.");
-        }
+        ui.add_space(8.0);
+        egui::Frame::new()
+            .fill(egui::Color32::from_rgb(16, 23, 34))
+            .inner_margin(egui::Margin::same(12))
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(egui::RichText::new("NEXT STEP").strong().color(egui::Color32::from_rgb(118, 184, 255)));
+                    ui.label("Open Diagnostics to test DNS, the standard WSS route and the media WSS route.");
+                    if ui.button("Open diagnostics").clicked() {
+                        self.page = Page::Diagnostics;
+                    }
+                });
+                ui.add_space(4.0);
+                ui.small("WSS latency measures the time to establish a WebSocket route, not an ICMP ping. Media WSS availability does not by itself verify an end-to-end Telegram call.");
+            });
     }
-
     fn diagnostics_page(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Diagnostics");
+        ui.heading(egui::RichText::new("Diagnostics").size(27.0).strong());
+        ui.label(egui::RichText::new("Test the local listener and upstream route independently.").weak());
+        ui.add_space(8.0);
         ui.horizontal(|ui| {
             if !self.diagnostics_running && ui.button("Run full test").clicked() {
                 self.start_diagnostics();
@@ -518,7 +575,9 @@ impl TeleRouteApp {
     }
 
     fn statistics_page(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Statistics");
+        ui.heading(egui::RichText::new("Statistics").size(27.0).strong());
+        ui.label(egui::RichText::new("Traffic totals, transport reliability and call-path counters.").weak());
+        ui.add_space(8.0);
         let s = self.ctx.snapshot();
         let values = [
             ("Connections", s.connections.to_string()),
@@ -748,14 +807,15 @@ fn generate_random_secret() -> String {
 
 fn responsive_card(ui: &mut egui::Ui, title: &str, value: &str) {
     let width = ui.available_width().max(1.0);
-    egui::Frame::group(ui.style())
-        .fill(egui::Color32::from_rgb(24, 31, 43))
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(43, 54, 72)))
+    egui::Frame::new()
+        .fill(egui::Color32::from_rgb(19, 27, 40))
+        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(40, 54, 74)))
+        .inner_margin(egui::Margin::same(13))
         .show(ui, |ui| {
-            ui.set_min_size([width, 76.0].into());
-            ui.weak(title);
-            ui.add_space(5.0);
-            ui.label(egui::RichText::new(value).strong().size(18.0));
+            ui.set_min_size([width, 78.0].into());
+            ui.label(egui::RichText::new(title).size(11.0).strong().color(egui::Color32::from_rgb(130, 151, 178)));
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(value).strong().size(15.0));
         });
 }
 fn human_bytes(n: u64) -> String { const U:[&str;4]=["B","KB","MB","GB"]; let mut v=n as f64; let mut i=0; while v>=1024.0 && i<3 {v/=1024.0;i+=1;} format!("{v:.1} {}",U[i]) }
