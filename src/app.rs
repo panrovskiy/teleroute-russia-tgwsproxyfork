@@ -22,12 +22,13 @@ pub struct AppContext {
     pub config: Arc<RwLock<AppConfig>>,
     pub stats: Arc<Statistics>,
     pub telemetry: Arc<RwLock<Telemetry>>,
+    ws_pool: crate::websocket::WebSocketPool,
     runtime: Arc<Runtime>,
     shutdown: Arc<RwLock<Option<CancellationToken>>>,
 }
 impl AppContext {
     pub fn new(config: AppConfig, runtime: Runtime) -> Self {
-        Self { config: Arc::new(RwLock::new(config)), stats: Arc::new(Statistics::default()), telemetry: Arc::new(RwLock::new(Telemetry::default())), runtime: Arc::new(runtime), shutdown: Arc::new(RwLock::new(None)) }
+        Self { config: Arc::new(RwLock::new(config)), stats: Arc::new(Statistics::default()), telemetry: Arc::new(RwLock::new(Telemetry::default())), ws_pool: crate::websocket::WebSocketPool::default(), runtime: Arc::new(runtime), shutdown: Arc::new(RwLock::new(None)) }
     }
 
     pub fn snapshot(&self) -> StatsSnapshot { self.stats.snapshot() }
@@ -101,11 +102,12 @@ impl AppContext {
         let stats = self.stats.clone();
         let telemetry = self.telemetry.clone();
         let config_store = self.config.clone();
+        let ws_pool = self.ws_pool.clone();
         let token = CancellationToken::new();
         *self.shutdown.write() = Some(token.clone());
 
         self.runtime.spawn(async move {
-            let mtproto_pool = crate::websocket::WebSocketPool::default();
+            let mtproto_pool = ws_pool;
 
             let frontend_result: anyhow::Result<(String, String)> = match config.telegram.frontend {
                 TelegramFrontend::MtprotoWs => (async {
@@ -394,7 +396,12 @@ impl AppContext {
         );
         let tun = telemetry.tun == "ACTIVE";
 
-        let mut report = crate::diagnostics::run_full(&cfg, self.stats.clone(), tun).await;
+        let mut report = crate::diagnostics::run_full_with_pool(
+            &cfg,
+            self.stats.clone(),
+            tun,
+            self.ws_pool.clone(),
+        ).await;
 
         if !connected {
             if report.socks5 == "NOT LISTENING" {
