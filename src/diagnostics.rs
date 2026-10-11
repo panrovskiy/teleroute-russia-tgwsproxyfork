@@ -17,7 +17,16 @@ pub struct DiagnosticReport {
     pub call_transport: String,
 }
 
-pub async fn run_full(config: &AppConfig, _stats: Arc<Statistics>, tun_active: bool) -> DiagnosticReport {
+pub async fn run_full(config: &AppConfig, stats: Arc<Statistics>, tun_active: bool) -> DiagnosticReport {
+    run_full_with_pool(config, stats, tun_active, crate::websocket::WebSocketPool::default()).await
+}
+
+pub async fn run_full_with_pool(
+    config: &AppConfig,
+    _stats: Arc<Statistics>,
+    tun_active: bool,
+    pool: crate::websocket::WebSocketPool,
+) -> DiagnosticReport {
     let socks5 = match timeout(
         Duration::from_secs(2),
         TcpStream::connect((config.proxy.bind.as_str(), config.proxy.port)),
@@ -57,7 +66,7 @@ pub async fn run_full(config: &AppConfig, _stats: Arc<Statistics>, tun_active: b
 
     // A failed TLS provider selection or another unexpected WSS panic must not
     // discard independent SOCKS5, MTProto, DNS, TCP and UDP results.
-    let ws = match AssertUnwindSafe(crate::websocket::probe(config))
+    let ws = match AssertUnwindSafe(crate::websocket::probe_with_pool(config, pool.clone()))
         .catch_unwind()
         .await
     {
@@ -68,7 +77,7 @@ pub async fn run_full(config: &AppConfig, _stats: Arc<Statistics>, tun_active: b
             "FAILED (internal error)"
         }
     };
-    let media_ws = match AssertUnwindSafe(crate::websocket::probe_media(config))
+    let media_ws = match AssertUnwindSafe(crate::websocket::probe_media_with_pool(config, pool))
         .catch_unwind()
         .await
     {
