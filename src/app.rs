@@ -67,7 +67,7 @@ impl AppContext {
                     return;
                 }
 
-                let proxy_id = format!("v3:{}:{}:{}", server, config.mtproto.port, secret);
+                let proxy_id = format!("v4:{}:{}:{}", server, config.mtproto.port, secret);
 
                 if config.telegram.auto_configure
                     && config.telegram.configured_mtproto.as_deref() != Some(proxy_id.as_str())
@@ -130,18 +130,20 @@ impl AppContext {
                         let host = config.telegram.mtproto_bind.clone();
                         let port = config.telegram.mtproto_port;
                         let secret = config.telegram.mtproto_secret.clone();
-                        let proxy_id = format!("v3:{}:{}:{}", host, port, secret);
+                        // v4 marks the plain-secret client URI. Earlier versions
+                        // prepended "dd", which selects Telegram Fake-TLS mode; this
+                        // listener only parses the ordinary obfuscated MTProto header.
+                        let proxy_id = format!("v4:{}:{}:{}", host, port, secret);
 
                         if config.telegram.auto_configure
                             && config.telegram.configured_mtproto.as_deref() != Some(proxy_id.as_str())
                         {
                             let cfg_store = config_store.clone();
                             tokio::spawn(async move {
-                                let tg_secret = format!("dd{secret}");
                                 match crate::platform::windows::open_telegram_mtproto_proxy(
                                     &host,
                                     port,
-                                    &tg_secret,
+                                    &secret,
                                 ) {
                                     Ok(()) => {
                                         let mut cfg = cfg_store.write();
