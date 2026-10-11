@@ -111,9 +111,14 @@ impl AppContext {
                 TelegramFrontend::MtprotoWs => (async {
                     let warmup_pool = mtproto_pool.clone();
                     let warmup_config = config.clone();
+                    let warmup_shutdown = token.child_token();
                     tokio::spawn(async move {
-                        warmup_pool.warmup(&warmup_config).await;
-                        tracing::info!("WSS route warmup completed");
+                        tokio::select! {
+                            _ = warmup_shutdown.cancelled() => {}
+                            _ = warmup_pool.warmup(&warmup_config) => {
+                                tracing::info!("WSS route warmup completed");
+                            }
+                        }
                     });
 
                     let server = crate::proxy::mtproto::MtprotoServer::new(
@@ -140,18 +145,19 @@ impl AppContext {
                         // v4 marks the plain-secret client URI. Earlier versions
                         // prepended "dd", which selects Telegram Fake-TLS mode; this
                         // listener only parses the ordinary obfuscated MTProto header.
-                        let proxy_id = format!("v4:{}:{}:{}", host, port, secret);
+                        let proxy_id = format!("v5:{}:{}:{}", host, port, secret);
 
                         if config.telegram.auto_configure
                             && config.telegram.configured_mtproto.as_deref() != Some(proxy_id.as_str())
                         {
                             let cfg_store = config_store.clone();
                             tokio::spawn(async move {
-                                let tg_secret = format!("dd{secret}");
+                                // This listener implements the regular secret-based obfuscated
+                                // MTProto header, not Telegram's Fake-TLS ("dd") transport.
                                 match crate::platform::windows::open_telegram_mtproto_proxy(
                                     &host,
                                     port,
-                                    &tg_secret,
+                                    &secret,
                                 ) {
                                     Ok(()) => {
                                         let mut cfg = cfg_store.write();
@@ -173,11 +179,16 @@ impl AppContext {
                 }).await,
 
                 TelegramFrontend::Socks5 => (async {
-                    let proxy = Socks5Server::new(config.clone(), stats.clone());
+                    let proxy = Socks5Server::with_pool(config.clone(), stats.clone(), mtproto_pool.clone());
                     let warmup_proxy = proxy.clone();
+                    let warmup_shutdown = token.child_token();
                     tokio::spawn(async move {
-                        warmup_proxy.warmup_wss_pool().await;
-                        tracing::info!("SOCKS5 WSS route warmup completed");
+                        tokio::select! {
+                            _ = warmup_shutdown.cancelled() => {}
+                            _ = warmup_proxy.warmup_wss_pool() => {
+                                tracing::info!("SOCKS5 WSS route warmup completed");
+                            }
+                        }
                     });
 
                     let listener = proxy.bind().await?;
@@ -300,6 +311,7 @@ impl AppContext {
             // dashboard does not stay stuck at "NOT VERIFIED" or an empty ping.
             let monitor_config = config.clone();
             let monitor_stats = stats.clone();
+            let monitor_pool = mtproto_pool.clone();
             let monitor_telemetry = telemetry.clone();
             let monitor_shutdown = token.child_token();
             tokio::spawn(async move {
@@ -309,8 +321,11 @@ impl AppContext {
                     }
 
                     let result = tokio::time::timeout(
-                        std::time::Duration::from_secs(8),
-                        crate::websocket::probe_media_latency(&monitor_config),
+                        std::time::Duration::from_secs(12),
+                        crate::websocket::probe_media_latency_with_pool(
+                            &monitor_config,
+                            monitor_pool.clone(),
+                        ),
                     )
                     .await;
 
