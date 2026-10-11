@@ -375,9 +375,24 @@ impl AppContext {
 
 
     pub fn disconnect(&self) {
-        if let Some(token) = self.shutdown.write().take() { token.cancel(); }
+        if let Some(token) = self.shutdown.write().take() {
+            token.cancel();
+        }
+
+        // Close any idle warmed upstream WSS sockets too. Keep the preferred
+        // endpoint hint so the next connection can retry the fastest known route.
+        let pool = self.ws_pool.clone();
+        self.runtime.spawn(async move {
+            pool.close_pooled_streams().await;
+        });
+
+        self.stats.ping_ms.store(0, std::sync::atomic::Ordering::Relaxed);
         let mut t = self.telemetry.write();
-        t.status = ConnectionStatus::Disconnected; t.transport = "—".into(); t.tun = "INACTIVE".into(); t.udp = "UNKNOWN".into(); t.calls = "NOT READY".into();
+        t.status = ConnectionStatus::Disconnected;
+        t.transport = "—".into();
+        t.tun = "INACTIVE".into();
+        t.udp = "UNKNOWN".into();
+        t.calls = "NOT READY".into();
     }
 
     pub fn save_config(&self) -> anyhow::Result<()> {
