@@ -25,6 +25,12 @@ impl WebSocketPool {
             .and_then(|v| v.pop())
     }
 
+    /// Drop pre-warmed sockets when the local proxy is disconnected.
+    /// Keep successful endpoint preferences so the next start can reconnect quickly.
+    pub async fn close_pooled_streams(&self) {
+        self.inner.lock().await.clear();
+    }
+
     async fn preferred(&self, dc: u16, media: bool, is_test_dc: bool) -> Option<String> {
         self.preferred.lock().await.get(&(dc, media, is_test_dc)).cloned()
     }
