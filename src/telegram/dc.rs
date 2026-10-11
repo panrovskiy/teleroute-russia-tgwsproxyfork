@@ -36,13 +36,11 @@ pub fn test_ipv4(id: u16) -> Option<IpAddr> {
     Some(ip.parse().expect("constant IPv4 address"))
 }
 
-/// WSS bridge targets from Flowseal's default DC redirect configuration.
-/// The known-good redirect is only for DC4. Redirecting DC2 to the same
-/// IP can make media transfers fail for some Telegram accounts; DC2 should
-/// use its own default address instead.
+/// WSS redirect targets follow Flowseal's default routing table. These are
+/// WebSocket front-door addresses, not the direct TCP fallback addresses below.
 pub fn websocket_target_ipv4(id: u16) -> Option<IpAddr> {
     match id {
-        4 => Some("149.154.167.220".parse().expect("constant IPv4 address")),
+        2 | 4 => Some("149.154.167.220".parse().expect("constant IPv4 address")),
         _ => default_ipv4(id),
     }
 }
@@ -79,10 +77,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_dc4_uses_the_redirect_ip() {
+    fn dc2_and_dc4_use_the_wss_redirect_ip() {
         assert_eq!(
             websocket_target_ipv4(2),
-            Some("149.154.167.51".parse().unwrap())
+            Some("149.154.167.220".parse().unwrap())
         );
         assert_eq!(
             websocket_target_ipv4(4),
