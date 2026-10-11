@@ -337,26 +337,23 @@ impl WebSocketTransport {
             endpoints.retain(|u| !u.contains("-1.web.telegram.org"));
         }
 
-        // Flowseal worker fallback connects to the worker domain itself and
-        // sends dst/dc query parameters. A synthetic kwsN.<worker-domain> host
-        // is not a valid worker route.
-        let fallback_dst = dc::websocket_target_ipv4_for(dc_id, is_test_dc)
-            .map(|ip| ip.to_string());
-        if let Some(dst) = fallback_dst {
-            let path = if is_test_dc { "/apiws_test" } else { "/apiws" };
-            for domain in &self.config.websocket.fallback_domains {
-                let domain = domain.trim();
-                if domain.is_empty()
-                    || domain.contains('/')
-                    || domain.contains(':')
-                    || domain.chars().any(char::is_whitespace)
-                {
-                    continue;
-                }
-                let endpoint = format!("wss://{domain}{path}?dst={dst}&dc={dc_id}");
-                if !endpoints.contains(&endpoint) {
-                    endpoints.push(endpoint);
-                }
+        // These built-in fallback entries are Cloudflare-proxied WS domains,
+        // not Worker endpoints. They must be contacted at /apiws without the
+        // Worker-only dst/dc query parameters; adding those parameters makes
+        // regular CF proxy domains reject the WebSocket upgrade.
+        let path = if is_test_dc { "/apiws_test" } else { "/apiws" };
+        for domain in &self.config.websocket.fallback_domains {
+            let domain = domain.trim();
+            if domain.is_empty()
+                || domain.contains('/')
+                || domain.contains(':')
+                || char::is_whitespace(domain.chars().next().unwrap_or(' '))
+            {
+                continue;
+            }
+            let endpoint = format!("wss://{domain}{path}");
+            if !endpoints.contains(&endpoint) {
+                endpoints.push(endpoint);
             }
         }
 
