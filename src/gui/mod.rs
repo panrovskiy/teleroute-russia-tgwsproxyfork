@@ -786,7 +786,7 @@ impl TeleRouteApp {
 
             match cfg.telegram.frontend {
                 TelegramFrontend::MtprotoWs => {
-                    ui.label("Uses a standard 32-character hexadecimal MTProto secret. Fake-TLS (dd-prefixed) secrets are not supported by this local listener.");
+                    ui.label("Uses the standard dd-prefixed MTProto link; ee/Fake-TLS mode is not enabled by this listener.");
                     ui.horizontal(|ui| {
                         ui.label("Local port");
                         ui.add(egui::Slider::new(&mut cfg.telegram.mtproto_port, 1..=65535));
@@ -814,7 +814,7 @@ impl TeleRouteApp {
                             #[cfg(windows)]
                             {
                                 let host = cfg.telegram.mtproto_bind.clone();
-                                let secret = cfg.telegram.mtproto_secret.trim().to_owned();
+                                let secret = format!("dd{}", cfg.telegram.mtproto_secret.trim());
                                 if crate::platform::windows::open_telegram_mtproto_proxy(
                                     &host,
                                     cfg.telegram.mtproto_port,
@@ -841,7 +841,7 @@ impl TeleRouteApp {
                         #[cfg(windows)]
                         {
                             let host = cfg.telegram.mtproto_bind.clone();
-                            let secret = cfg.telegram.mtproto_secret.trim().to_owned();
+                            let secret = format!("dd{}", cfg.telegram.mtproto_secret.trim());
                             if crate::platform::windows::open_telegram_mtproto_proxy(
                                 &host,
                                 cfg.telegram.mtproto_port,
