@@ -814,14 +814,14 @@ impl TeleRouteApp {
                             #[cfg(windows)]
                             {
                                 let host = cfg.telegram.mtproto_bind.clone();
-                                let secret = format!("dd{}", cfg.telegram.mtproto_secret.trim());
+                                let secret = cfg.telegram.mtproto_secret.trim().to_owned();
                                 if crate::platform::windows::open_telegram_mtproto_proxy(
                                     &host,
                                     cfg.telegram.mtproto_port,
                                     &secret,
                                 ).is_ok() {
                                     cfg.telegram.configured_mtproto = Some(format!(
-                                        "v4:{}:{}:{}",
+                                        "v5:{}:{}:{}",
                                         host,
                                         cfg.telegram.mtproto_port,
                                         cfg.telegram.mtproto_secret.trim()
@@ -841,14 +841,14 @@ impl TeleRouteApp {
                         #[cfg(windows)]
                         {
                             let host = cfg.telegram.mtproto_bind.clone();
-                            let secret = format!("dd{}", cfg.telegram.mtproto_secret.trim());
+                            let secret = cfg.telegram.mtproto_secret.trim().to_owned();
                             if crate::platform::windows::open_telegram_mtproto_proxy(
                                 &host,
                                 cfg.telegram.mtproto_port,
                                 &secret,
                             ).is_ok() {
                                 cfg.telegram.configured_mtproto = Some(format!(
-                                    "v4:{}:{}:{}",
+                                    "v5:{}:{}:{}",
                                     host,
                                     cfg.telegram.mtproto_port,
                                     cfg.telegram.mtproto_secret.trim()
