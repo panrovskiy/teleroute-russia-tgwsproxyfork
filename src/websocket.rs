@@ -347,7 +347,7 @@ impl WebSocketTransport {
             if domain.is_empty()
                 || domain.contains('/')
                 || domain.contains(':')
-                || char::is_whitespace(domain.chars().next().unwrap_or(' '))
+                || domain.chars().any(char::is_whitespace)
             {
                 continue;
             }
@@ -664,7 +664,28 @@ async fn probe_route(config: &AppConfig, media: bool) -> Option<i64> {
 
 #[cfg(test)]
 mod packet_splitter_tests {
-    use super::MtprotoPacketSplitter;
+    use super::{MtprotoPacketSplitter, WebSocketTransport};
+    use crate::{config::AppConfig, statistics::Statistics};
+    use std::sync::Arc;
+
+    #[test]
+    fn cloudflare_proxy_fallbacks_use_plain_apiws_path() {
+        let mut config = AppConfig::default();
+        config.websocket.templates = vec![
+            "wss://kws{dc}.web.telegram.org/apiws".into(),
+            "wss://kws{dc}-1.web.telegram.org/apiws".into(),
+        ];
+        config.websocket.fallback_domains = vec!["cf.example".into()];
+        let transport = WebSocketTransport::new(config, Arc::new(Statistics::default()));
+
+        let standard = transport.endpoints(2, false, false);
+        assert!(standard.iter().any(|url| url == "wss://cf.example/apiws"));
+        assert!(!standard.iter().any(|url| url.contains("dst=") || url.contains("dc=")));
+
+        let media = transport.endpoints(2, true, false);
+        assert!(media.iter().any(|url| url == "wss://cf.example/apiws"));
+        assert!(!media.iter().any(|url| url.contains("dst=") || url.contains("dc=")));
+    }
 
     #[test]
     fn intermediate_packet_can_arrive_in_multiple_tcp_chunks() {
