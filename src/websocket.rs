@@ -658,17 +658,48 @@ pub async fn probe_media(config: &AppConfig) -> bool {
     probe_route(config, true).await.is_some()
 }
 
-/// Measures the time needed to establish a usable Telegram WSS session.
-/// This is route-connection latency, not an ICMP echo ping.
+/// Measures WebSocket route setup time. This is not an ICMP echo ping.
 pub async fn probe_media_latency(config: &AppConfig) -> Option<i64> {
     probe_route(config, true).await
 }
 
+/// Reuse the application's preferred endpoint when checking media health.
+/// Without this, the dashboard could probe a brand-new route pool while actual
+/// traffic was already succeeding through the warmed pool.
+pub async fn probe_media_latency_with_pool(
+    config: &AppConfig,
+    pool: WebSocketPool,
+) -> Option<i64> {
+    probe_route_with_pool(config, true, pool).await
+}
+
 async fn probe_route(config: &AppConfig, media: bool) -> Option<i64> {
-    let transport = WebSocketTransport::new(config.clone(), Arc::new(Statistics::default()));
-    let mut remaining = transport.endpoints(2, media, false).into_iter().take(8);
+    probe_route_with_pool(config, media, WebSocketPool::default()).await
+}
+
+async fn probe_route_with_pool(
+    config: &AppConfig,
+    media: bool,
+    pool: WebSocketPool,
+) -> Option<i64> {
+    let transport = WebSocketTransport::with_pool(
+        config.clone(),
+        Arc::new(Statistics::default()),
+        pool,
+    );
+    let mut endpoints = transport.endpoints(2, media, false);
+
+    // Put the last successfully used endpoint first. Endpoint discovery remains
+    // parallel so a stale preference cannot block the remaining candidates.
+    if let Some(preferred) = transport.pool.preferred(2, media, false).await {
+        if let Some(index) = endpoints.iter().position(|endpoint| endpoint == &preferred) {
+            endpoints.swap(0, index);
+        }
+    }
+
+    let mut remaining = endpoints.into_iter().take(8);
     let mut attempts = futures_util::stream::FuturesUnordered::new();
-    let deadline = Duration::from_millis(config.timeouts.connect_ms.min(1800).max(500));
+    let deadline = Duration::from_millis(config.timeouts.connect_ms.min(3500).max(1500));
 
     for _ in 0..4 {
         if let Some(url) = remaining.next() {
