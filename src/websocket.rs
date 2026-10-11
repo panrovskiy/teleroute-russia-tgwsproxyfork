@@ -707,49 +707,73 @@ async fn probe_route_with_pool(
         Arc::new(Statistics::default()),
         pool,
     );
-    let mut endpoints = transport.endpoints(2, media, false);
 
-    // Put the last successfully used endpoint first. Endpoint discovery remains
-    // parallel so a stale preference cannot block the remaining candidates.
-    if let Some(preferred) = transport.pool.preferred(2, media, false).await {
-        if let Some(index) = endpoints.iter().position(|endpoint| endpoint == &preferred) {
-            endpoints.swap(0, index);
+    // Telegram may put an account or media session on different DCs. A hardcoded
+    // DC2-only probe can report FAILED while the currently used DC4 route works.
+    let mut routes: Vec<(u16, String)> = Vec::new();
+    for dc_id in [2u16, 4, 1, 3, 5] {
+        if let Some(preferred) = transport.pool.preferred(dc_id, media, false).await {
+            routes.push((dc_id, preferred));
+        }
+
+        let official: Vec<String> = transport
+            .endpoints(dc_id, media, false)
+            .into_iter()
+            .filter(|url| url.contains(".web.telegram.org"))
+            .take(2)
+            .collect();
+        for url in official {
+            if !routes.iter().any(|(existing_dc, existing_url)| *existing_dc == dc_id && existing_url == &url) {
+                routes.push((dc_id, url));
+            }
         }
     }
 
-    let mut remaining = endpoints.into_iter().take(8);
+    // Generic CF proxy domains do not encode a DC in their URL, so test them
+    // only once instead of duplicating them for every DC.
+    for url in transport
+        .endpoints(2, media, false)
+        .into_iter()
+        .filter(|url| !url.contains(".web.telegram.org"))
+    {
+        if !routes.iter().any(|(_, existing_url)| existing_url == &url) {
+            routes.push((2, url));
+        }
+    }
+
+    let mut remaining = routes.into_iter().take(20);
     let mut attempts = futures_util::stream::FuturesUnordered::new();
     let deadline = Duration::from_millis(config.timeouts.connect_ms.min(3500).max(1500));
 
     for _ in 0..4 {
-        if let Some(url) = remaining.next() {
-            let target = target_ip_for_url(&url, 2, false);
+        if let Some((dc_id, url)) = remaining.next() {
+            let target = target_ip_for_url(&url, dc_id, false);
             let attempt_url = url.clone();
             let transport_ref = &transport;
             attempts.push(async move {
                 let started = Instant::now();
-                let result = timeout(deadline, transport_ref.connect(&attempt_url, 2, target)).await;
+                let result = timeout(deadline, transport_ref.connect(&attempt_url, dc_id, target)).await;
                 let elapsed_ms = started.elapsed().as_millis().max(1) as i64;
-                (url, result, elapsed_ms)
+                (dc_id, url, result, elapsed_ms)
             }.boxed());
         }
     }
 
-    while let Some((_url, result, elapsed_ms)) = attempts.next().await {
+    while let Some((_dc_id, _url, result, elapsed_ms)) = attempts.next().await {
         if let Ok(Ok((ws, _))) = result {
             drop(ws);
             return Some(elapsed_ms);
         }
 
-        if let Some(url) = remaining.next() {
-            let target = target_ip_for_url(&url, 2, false);
+        if let Some((dc_id, url)) = remaining.next() {
+            let target = target_ip_for_url(&url, dc_id, false);
             let attempt_url = url.clone();
             let transport_ref = &transport;
             attempts.push(async move {
                 let started = Instant::now();
-                let result = timeout(deadline, transport_ref.connect(&attempt_url, 2, target)).await;
+                let result = timeout(deadline, transport_ref.connect(&attempt_url, dc_id, target)).await;
                 let elapsed_ms = started.elapsed().as_millis().max(1) as i64;
-                (url, result, elapsed_ms)
+                (dc_id, url, result, elapsed_ms)
             }.boxed());
         }
     }
