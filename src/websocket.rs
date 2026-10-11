@@ -658,6 +658,20 @@ pub async fn probe_media(config: &AppConfig) -> bool {
     probe_route(config, true).await.is_some()
 }
 
+pub async fn probe_with_pool(
+    config: &AppConfig,
+    pool: WebSocketPool,
+) -> bool {
+    probe_route_with_pool(config, false, pool).await.is_some()
+}
+
+pub async fn probe_media_with_pool(
+    config: &AppConfig,
+    pool: WebSocketPool,
+) -> bool {
+    probe_route_with_pool(config, true, pool).await.is_some()
+}
+
 /// Measures WebSocket route setup time. This is not an ICMP echo ping.
 pub async fn probe_media_latency(config: &AppConfig) -> Option<i64> {
     probe_route(config, true).await
