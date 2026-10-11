@@ -11,14 +11,18 @@ pub type WsStream = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeT
 
 #[derive(Clone, Default)]
 pub struct WebSocketPool {
-    inner: Arc<Mutex<HashMap<u16, Vec<WsStream>>>>,
+    inner: Arc<Mutex<HashMap<(u16, bool, bool), Vec<WsStream>>>>,
     // Remember a recently successful route per DC/media/test-DC tuple so
     // subsequent Telegram connections do not repeat cold endpoint discovery.
     preferred: Arc<Mutex<HashMap<(u16, bool, bool), String>>>,
 }
 impl WebSocketPool {
-    pub async fn take(&self, dc: u16) -> Option<WsStream> {
-        self.inner.lock().await.get_mut(&dc).and_then(|v| v.pop())
+    pub async fn take(&self, dc: u16, media: bool, is_test_dc: bool) -> Option<WsStream> {
+        self.inner
+            .lock()
+            .await
+            .get_mut(&(dc, media, is_test_dc))
+            .and_then(|v| v.pop())
     }
 
     async fn preferred(&self, dc: u16, media: bool, is_test_dc: bool) -> Option<String> {
@@ -35,32 +39,73 @@ impl WebSocketPool {
 
     pub async fn warmup(&self, config: &AppConfig) {
         let target_size = config.websocket.pool_size.max(1);
-        for dc in 1..=5u16 {
-            loop {
-                let current = self.inner.lock().await.get(&dc).map(|v| v.len()).unwrap_or(0);
-                if current >= target_size {
-                    break;
-                }
+        let deadline = Duration::from_millis(config.timeouts.connect_ms.min(1800).max(500));
 
-                let transport = WebSocketTransport::with_pool(
-                    config.clone(),
-                    Arc::new(Statistics::default()),
-                    self.clone(),
-                );
-                let Some(url) = transport.endpoints(dc, false, false).first().cloned() else {
-                    break;
-                };
-                let target_ip = target_ip_for_url(&url, dc, false);
-
-                match timeout(
-                    Duration::from_millis(config.timeouts.connect_ms.min(1800).max(500)),
-                    transport.connect(&url, dc, target_ip),
-                ).await {
-                    Ok(Ok((ws, _))) => {
-                        self.remember(dc, false, false, &url).await;
-                        self.inner.lock().await.entry(dc).or_default().push(ws);
+        // DC2/DC4 are the common routes and are warmed first. Keep media and
+        // regular traffic in separate pools; a media stream must not be reused
+        // for an ordinary MTProto session (or vice versa).
+        for dc in [2u16, 4, 1, 3, 5] {
+            for media in [false, true] {
+                let key = (dc, media, false);
+                loop {
+                    let current = self.inner.lock().await.get(&key).map(|v| v.len()).unwrap_or(0);
+                    if current >= target_size {
+                        break;
                     }
-                    _ => break,
+
+                    let transport = WebSocketTransport::with_pool(
+                        config.clone(),
+                        Arc::new(Statistics::default()),
+                        self.clone(),
+                    );
+                    let mut remaining = transport.endpoints(dc, media, false).into_iter().take(8);
+                    let mut attempts = futures_util::stream::FuturesUnordered::new();
+
+                    for _ in 0..4 {
+                        if let Some(url) = remaining.next() {
+                            let attempt_url = url.clone();
+                            let transport_ref = &transport;
+                            attempts.push(async move {
+                                let target_ip = target_ip_for_url(&attempt_url, dc, false);
+                                let result = timeout(
+                                    deadline,
+                                    transport_ref.connect(&attempt_url, dc, target_ip),
+                                ).await;
+                                (url, result)
+                            }.boxed());
+                        }
+                    }
+
+                    let mut connected = None;
+                    while let Some((url, result)) = attempts.next().await {
+                        match result {
+                            Ok(Ok((ws, _))) => {
+                                connected = Some((url, ws));
+                                break;
+                            }
+                            _ => {
+                                if let Some(next_url) = remaining.next() {
+                                    let attempt_url = next_url.clone();
+                                    let transport_ref = &transport;
+                                    attempts.push(async move {
+                                        let target_ip = target_ip_for_url(&attempt_url, dc, false);
+                                        let result = timeout(
+                                            deadline,
+                                            transport_ref.connect(&attempt_url, dc, target_ip),
+                                        ).await;
+                                        (next_url, result)
+                                    }.boxed());
+                                }
+                            }
+                        }
+                    }
+
+                    if let Some((url, ws)) = connected {
+                        self.remember(dc, media, false, &url).await;
+                        self.inner.lock().await.entry(key).or_default().push(ws);
+                    } else {
+                        break;
+                    }
                 }
             }
         }
@@ -103,9 +148,9 @@ impl WebSocketTransport {
         let relay_dc = if media { -(dc_id as i16) } else { dc_id as i16 };
         self.stats.ws_attempts.fetch_add(1, Ordering::Relaxed);
 
-        // The pool is keyed only by DC; keep media/test routes isolated.
-        if !media && !is_test_dc {
-        if let Some(mut ws) = self.pool.take(dc_id).await {
+        // Reuse a pre-connected stream only when its DC/media/test-DC route
+        // matches the client's handshake.
+        if let Some(mut ws) = self.pool.take(dc_id, media, is_test_dc).await {
             self.stats.ws_success.fetch_add(1, Ordering::Relaxed);
             self.stats.current_dc.store(dc_id as i64, Ordering::Relaxed);
             self.stats.current_transport.store(1, Ordering::Relaxed);
@@ -113,7 +158,6 @@ impl WebSocketTransport {
             let upstream = obfs2::new_client(client_obfs.parsed.protocol, relay_dc)?;
             ws.send(Message::Binary(upstream.wire_header.to_vec().into())).await?;
             return self.pipe(client, client_obfs, &mut ws, upstream).await;
-        }
         }
 
         // Race all configured WSS endpoints instead of trying them serially.
