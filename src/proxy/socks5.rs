@@ -79,6 +79,7 @@ impl Socks5Server {
     }
 
     async fn handle(&self, mut stream: TcpStream) -> anyhow::Result<()> {
+        stream.set_nodelay(true)?;
         self.negotiate(&mut stream).await?;
         let (host, port) = read_request(&mut stream).await?;
 

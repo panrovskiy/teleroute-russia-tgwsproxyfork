@@ -90,6 +90,7 @@ impl MtprotoServer {
     }
 
     async fn handle(&self, mut stream: TcpStream) -> anyhow::Result<()> {
+        stream.set_nodelay(true)?;
         let mut header = [0u8; 64];
         timeout(Duration::from_secs(10), stream.read_exact(&mut header)).await??;
 

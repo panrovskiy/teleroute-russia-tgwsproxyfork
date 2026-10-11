@@ -467,6 +467,7 @@ impl WebSocketTransport {
         mut upstream: ClientObfs,
     ) -> anyhow::Result<()> {
         let protocol = client_obfs.parsed.protocol;
+        client.set_nodelay(true)?;
         let (mut client_r, mut client_w) = client.split();
         let (mut ws_w, mut ws_r) = ws.split();
         let stats_up = self.stats.clone();
@@ -474,7 +475,9 @@ impl WebSocketTransport {
 
         let up = async move {
             let mut splitter = MtprotoPacketSplitter::new(protocol);
-            let mut buf = vec![0u8; 16 * 1024];
+            // Read larger chunks so several small MTProto packets can be fed to
+            // the WebSocket sink in one batch on high-throughput media sessions.
+            let mut buf = vec![0u8; 64 * 1024];
             loop {
                 let n = client_r.read(&mut buf).await?;
                 if n == 0 {
@@ -489,13 +492,25 @@ impl WebSocketTransport {
                 stats_up.bytes_up.fetch_add(n as u64, Ordering::Relaxed);
                 stats_up.packets_up.fetch_add(1, Ordering::Relaxed);
 
-                for frame in splitter.push(&encrypted, &plain) {
-                    ws_w.send(Message::Binary(frame.into())).await?;
+                let frames = splitter.push(&encrypted, &plain);
+                if !frames.is_empty() {
+                    for frame in frames {
+                        // feed() queues each distinct WebSocket message, while a
+                        // single flush below writes the batch to the TLS socket.
+                        // This preserves Telegram's packet/frame boundaries without
+                        // paying a flush round-trip for every small packet.
+                        ws_w.feed(Message::Binary(frame.into())).await?;
+                    }
+                    ws_w.flush().await?;
                 }
             }
 
-            for frame in splitter.flush() {
-                ws_w.send(Message::Binary(frame.into())).await?;
+            let remaining = splitter.flush();
+            if !remaining.is_empty() {
+                for frame in remaining {
+                    ws_w.feed(Message::Binary(frame.into())).await?;
+                }
+                ws_w.flush().await?;
             }
 
             let _ = ws_w.send(Message::Close(None)).await;
@@ -503,20 +518,50 @@ impl WebSocketTransport {
         };
 
         let down = async move {
-            while let Some(msg) = ws_r.next().await {
-                match msg? {
-                    Message::Binary(data) => {
-                        let mut data = data.to_vec();
-                        upstream.decrypt.apply_keystream(&mut data);
-                        client_obfs.encrypt.apply_keystream(&mut data);
-                        stats_down.bytes_down.fetch_add(data.len() as u64, Ordering::Relaxed);
-                        stats_down.packets_down.fetch_add(1, Ordering::Relaxed);
-                        client_w.write_all(&data).await?;
+            // Media downloads can arrive as many small WebSocket binary messages.
+            // Coalesce them into bounded TCP writes instead of issuing write_all
+            // for every frame. The short timer keeps small interactive messages
+            // responsive when a batch doesn't fill.
+            const WRITE_BATCH_BYTES: usize = 128 * 1024;
+            const WRITE_BATCH_DELAY: Duration = Duration::from_millis(2);
+            let mut pending = Vec::with_capacity(WRITE_BATCH_BYTES);
+            let mut flush_tick = tokio::time::interval_at(
+                tokio::time::Instant::now() + WRITE_BATCH_DELAY,
+                WRITE_BATCH_DELAY,
+            );
+
+            loop {
+                tokio::select! {
+                    message = ws_r.next() => {
+                        let Some(message) = message else { break; };
+                        match message? {
+                            Message::Binary(data) => {
+                                let mut data = data.to_vec();
+                                upstream.decrypt.apply_keystream(&mut data);
+                                client_obfs.encrypt.apply_keystream(&mut data);
+                                stats_down.bytes_down.fetch_add(data.len() as u64, Ordering::Relaxed);
+                                stats_down.packets_down.fetch_add(1, Ordering::Relaxed);
+                                pending.extend_from_slice(&data);
+
+                                if pending.len() >= WRITE_BATCH_BYTES {
+                                    client_w.write_all(&pending).await?;
+                                    pending.clear();
+                                }
+                            }
+                            Message::Close(_) => break,
+                            Message::Ping(_) | Message::Pong(_) => {}
+                            _ => {}
+                        }
                     }
-                    Message::Close(_) => break,
-                    Message::Ping(_) | Message::Pong(_) => {}
-                    _ => {}
+                    _ = flush_tick.tick(), if !pending.is_empty() => {
+                        client_w.write_all(&pending).await?;
+                        pending.clear();
+                    }
                 }
+            }
+
+            if !pending.is_empty() {
+                client_w.write_all(&pending).await?;
             }
             Ok::<(), anyhow::Error>(())
         };
