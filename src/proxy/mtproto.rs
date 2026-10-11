@@ -53,29 +53,34 @@ impl MtprotoServer {
                 accepted = listener.accept() => {
                     let (stream, peer) = accepted?;
                     let this = self.clone();
+                    let client_shutdown = shutdown.child_token();
 
                     tokio::spawn(async move {
                         this.stats.connections.fetch_add(1, Ordering::Relaxed);
+                        let handler = AssertUnwindSafe(this.handle(stream)).catch_unwind();
+                        tokio::pin!(handler);
 
-                        let result = AssertUnwindSafe(this.handle(stream))
-                            .catch_unwind()
-                            .await;
-
-                        match result {
-                            Ok(Ok(())) => {}
-                            Ok(Err(e)) => debug!(%peer, error = %e, "MTProto client closed"),
-                            Err(panic) => {
-                                let detail = if let Some(message) = panic.downcast_ref::<&str>() {
-                                    (*message).to_owned()
-                                } else if let Some(message) = panic.downcast_ref::<String>() {
-                                    message.clone()
-                                } else {
-                                    "non-string panic payload".to_owned()
-                                };
-                                error!(%peer, panic = %detail, "MTProto client handler panicked");
-                            },
+                        tokio::select! {
+                            _ = client_shutdown.cancelled() => {
+                                debug!(%peer, "closing MTProto client because proxy was disconnected");
+                            }
+                            result = &mut handler => {
+                                match result {
+                                    Ok(Ok(())) => {}
+                                    Ok(Err(e)) => debug!(%peer, error = %e, "MTProto client closed"),
+                                    Err(panic) => {
+                                        let detail = if let Some(message) = panic.downcast_ref::<&str>() {
+                                            (*message).to_owned()
+                                        } else if let Some(message) = panic.downcast_ref::<String>() {
+                                            message.clone()
+                                        } else {
+                                            "non-string panic payload".to_owned()
+                                        };
+                                        error!(%peer, panic = %detail, "MTProto client handler panicked");
+                                    }
+                                }
+                            }
                         }
-
                     });
                 }
             }
@@ -97,6 +102,7 @@ impl MtprotoServer {
         };
 
         self.stats.active_connections.fetch_add(1, Ordering::Relaxed);
+        let _active_connection = ActiveConnectionGuard(self.stats.clone());
         let result = AssertUnwindSafe(
             WebSocketTransport::with_pool(
                 self.config.clone(),
@@ -105,11 +111,18 @@ impl MtprotoServer {
             )
             .bridge(&mut stream, header, client_obfs)
         ).catch_unwind().await;
-        self.stats.active_connections.fetch_sub(1, Ordering::Relaxed);
         match result {
             Ok(result) => result,
             Err(panic) => std::panic::resume_unwind(panic),
         }
+    }
+}
+
+struct ActiveConnectionGuard(Arc<Statistics>);
+
+impl Drop for ActiveConnectionGuard {
+    fn drop(&mut self) {
+        self.0.active_connections.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
