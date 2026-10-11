@@ -140,10 +140,11 @@ impl AppContext {
                         {
                             let cfg_store = config_store.clone();
                             tokio::spawn(async move {
+                                let tg_secret = format!("dd{secret}");
                                 match crate::platform::windows::open_telegram_mtproto_proxy(
                                     &host,
                                     port,
-                                    &secret,
+                                    &tg_secret,
                                 ) {
                                     Ok(()) => {
                                         let mut cfg = cfg_store.write();
