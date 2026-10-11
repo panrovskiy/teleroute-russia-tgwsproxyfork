@@ -109,6 +109,13 @@ impl AppContext {
 
             let frontend_result: anyhow::Result<(String, String)> = match config.telegram.frontend {
                 TelegramFrontend::MtprotoWs => (async {
+                    let warmup_pool = mtproto_pool.clone();
+                    let warmup_config = config.clone();
+                    tokio::spawn(async move {
+                        warmup_pool.warmup(&warmup_config).await;
+                        tracing::info!("WSS route warmup completed");
+                    });
+
                     let server = crate::proxy::mtproto::MtprotoServer::new(
                         config.clone(),
                         stats.clone(),
@@ -167,6 +174,12 @@ impl AppContext {
 
                 TelegramFrontend::Socks5 => (async {
                     let proxy = Socks5Server::new(config.clone(), stats.clone());
+                    let warmup_proxy = proxy.clone();
+                    tokio::spawn(async move {
+                        warmup_proxy.warmup_wss_pool().await;
+                        tracing::info!("SOCKS5 WSS route warmup completed");
+                    });
+
                     let listener = proxy.bind().await?;
                     let addr = listener.local_addr()?;
 
