@@ -786,7 +786,7 @@ impl TeleRouteApp {
 
             match cfg.telegram.frontend {
                 TelegramFrontend::MtprotoWs => {
-                    ui.label("Calls/media use the Telegram MTProto media WebSocket path; TUN is optional.");
+                    ui.label("Uses a standard 32-character hexadecimal MTProto secret. Fake-TLS (dd-prefixed) secrets are not supported by this local listener.");
                     ui.horizontal(|ui| {
                         ui.label("Local port");
                         ui.add(egui::Slider::new(&mut cfg.telegram.mtproto_port, 1..=65535));
@@ -814,14 +814,14 @@ impl TeleRouteApp {
                             #[cfg(windows)]
                             {
                                 let host = cfg.telegram.mtproto_bind.clone();
-                                let secret = format!("dd{}", cfg.telegram.mtproto_secret.trim());
+                                let secret = cfg.telegram.mtproto_secret.trim().to_owned();
                                 if crate::platform::windows::open_telegram_mtproto_proxy(
                                     &host,
                                     cfg.telegram.mtproto_port,
                                     &secret,
                                 ).is_ok() {
                                     cfg.telegram.configured_mtproto = Some(format!(
-                                        "{}:{}:{}",
+                                        "v4:{}:{}:{}",
                                         host,
                                         cfg.telegram.mtproto_port,
                                         cfg.telegram.mtproto_secret.trim()
@@ -841,14 +841,14 @@ impl TeleRouteApp {
                         #[cfg(windows)]
                         {
                             let host = cfg.telegram.mtproto_bind.clone();
-                            let tg_secret = format!("dd{}", cfg.telegram.mtproto_secret.trim());
+                            let secret = cfg.telegram.mtproto_secret.trim().to_owned();
                             if crate::platform::windows::open_telegram_mtproto_proxy(
                                 &host,
                                 cfg.telegram.mtproto_port,
-                                &tg_secret,
+                                &secret,
                             ).is_ok() {
                                 cfg.telegram.configured_mtproto = Some(format!(
-                                    "{}:{}:{}",
+                                    "v4:{}:{}:{}",
                                     host,
                                     cfg.telegram.mtproto_port,
                                     cfg.telegram.mtproto_secret.trim()
