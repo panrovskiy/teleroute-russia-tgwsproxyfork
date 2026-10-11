@@ -248,6 +248,12 @@ impl AppContext {
                 }
             };
 
+            // Disconnect may happen while the listener is still starting.
+            // Never publish a connected state or launch optional services after cancellation.
+            if token.is_cancelled() {
+                return;
+            }
+
             // TUN is optional. Telegram WS media uses the negative-DC routing
             // path (kwsN-1) directly, matching Flowseal's architecture.
             if config.tun.enabled && matches!(config.routing.mode, Mode::Calls | Mode::Full) {
