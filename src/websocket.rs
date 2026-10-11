@@ -759,8 +759,9 @@ async fn probe_route_with_pool(
         }
     }
 
-    while let Some((_dc_id, _url, result, elapsed_ms)) = attempts.next().await {
+    while let Some((dc_id, url, result, elapsed_ms)) = attempts.next().await {
         if let Ok(Ok((ws, _))) = result {
+            transport.pool.remember(dc_id, media, false, &url).await;
             drop(ws);
             return Some(elapsed_ms);
         }

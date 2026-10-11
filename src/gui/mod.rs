@@ -91,7 +91,7 @@ impl TeleRouteApp {
     }
 
     fn status_text(&self) -> &'static str {
-        match self.ctx.status().status { ConnectionStatus::Connected => "READY", ConnectionStatus::Connecting => "CONNECTING", ConnectionStatus::Error => "ERROR", ConnectionStatus::Disconnected => "DISCONNECTED" }
+        match self.ctx.status().status { ConnectionStatus::Connected => "LISTENER READY", ConnectionStatus::Connecting => "CONNECTING", ConnectionStatus::Stopping => "STOPPING", ConnectionStatus::Error => "ERROR", ConnectionStatus::Disconnected => "DISCONNECTED" }
     }
 
     fn mode_text(&self) -> String { format!("{:?}", self.ctx.config.read().routing.mode) }
@@ -248,6 +248,7 @@ impl eframe::App for TeleRouteApp {
         let (header_text, header_color) = match header_status.status {
             ConnectionStatus::Connected => ("LOCAL LISTENER READY", egui::Color32::from_rgb(82, 205, 145)),
             ConnectionStatus::Connecting => ("STARTING", egui::Color32::from_rgb(242, 189, 91)),
+            ConnectionStatus::Stopping => ("STOPPING", egui::Color32::from_rgb(242, 189, 91)),
             ConnectionStatus::Error => ("NEEDS ATTENTION", egui::Color32::from_rgb(238, 103, 110)),
             ConnectionStatus::Disconnected => ("OFFLINE", egui::Color32::from_rgb(155, 167, 184)),
         };
@@ -367,12 +368,13 @@ impl TeleRouteApp {
                 let status_text = match status.status {
                     ConnectionStatus::Connected => "Listener running",
                     ConnectionStatus::Connecting => "Starting services",
+                    ConnectionStatus::Stopping => "Stopping listeners",
                     ConnectionStatus::Error => "Startup error",
                     ConnectionStatus::Disconnected => "Disconnected",
                 };
                 let status_color = match status.status {
                     ConnectionStatus::Connected => egui::Color32::from_rgb(82, 205, 145),
-                    ConnectionStatus::Connecting => egui::Color32::from_rgb(242, 189, 91),
+                    ConnectionStatus::Connecting | ConnectionStatus::Stopping => egui::Color32::from_rgb(242, 189, 91),
                     ConnectionStatus::Error => egui::Color32::from_rgb(238, 103, 110),
                     ConnectionStatus::Disconnected => egui::Color32::from_rgb(155, 167, 184),
                 };
@@ -396,7 +398,8 @@ impl TeleRouteApp {
         let telemetry = self.ctx.status();
         let stats = self.ctx.snapshot();
         let config = self.ctx.config.read().clone();
-        let has_payload = stats.bytes_up > 0 || stats.bytes_down > 0;
+        let active_sessions = stats.active_connections;
+        let has_live_session = active_sessions > 0;
 
         let transport_text = if stats.current_transport != "—" {
             stats.current_transport.to_string()
@@ -410,25 +413,30 @@ impl TeleRouteApp {
             .unwrap_or_else(|| telemetry.dc.clone());
 
         let (status_label, status_color, status_detail) = match telemetry.status {
-            ConnectionStatus::Connected if has_payload => (
-                "TRAFFIC ACTIVE",
+            ConnectionStatus::Connected if has_live_session => (
+                "TELEGRAM SESSION ACTIVE",
                 egui::Color32::from_rgb(82, 205, 145),
-                "Telegram data is moving through the local proxy.",
+                "A client has completed the local proxy handshake.",
             ),
             ConnectionStatus::Connected => (
                 "LOCAL LISTENER READY",
                 egui::Color32::from_rgb(242, 189, 91),
-                "The local port is open. The upstream route is checked separately.",
+                "The local port is open, but no valid Telegram client session is attached. The saved proxy entry may not be selected or connected in Telegram.",
             ),
             ConnectionStatus::Connecting => (
                 "STARTING",
                 egui::Color32::from_rgb(242, 189, 91),
                 "Starting the local Telegram frontend.",
             ),
+            ConnectionStatus::Stopping => (
+                "STOPPING",
+                egui::Color32::from_rgb(242, 189, 91),
+                "Closing local listeners and active sessions before allowing restart.",
+            ),
             ConnectionStatus::Error => (
                 "NEEDS ATTENTION",
                 egui::Color32::from_rgb(238, 103, 110),
-                "The frontend could not start. See the error details below.",
+                "The frontend stopped or could not start. See the error details below.",
             ),
             ConnectionStatus::Disconnected => (
                 "OFFLINE",
@@ -471,17 +479,18 @@ impl TeleRouteApp {
                     });
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let (label, fill) = if telemetry.status == ConnectionStatus::Connected {
-                            ("Disconnect", egui::Color32::from_rgb(134, 53, 68))
-                        } else {
-                            ("Connect", egui::Color32::from_rgb(35, 126, 92))
+                        let (label, fill) = match telemetry.status {
+                            ConnectionStatus::Connected => ("Disconnect", egui::Color32::from_rgb(134, 53, 68)),
+                            ConnectionStatus::Connecting => ("Starting…", egui::Color32::from_rgb(72, 86, 105)),
+                            ConnectionStatus::Stopping => ("Stopping…", egui::Color32::from_rgb(72, 86, 105)),
+                            ConnectionStatus::Error | ConnectionStatus::Disconnected => ("Connect", egui::Color32::from_rgb(35, 126, 92)),
                         };
                         let button = egui::Button::new(egui::RichText::new(label).strong().size(16.0)).fill(fill);
                         if ui.add_sized([150.0, 48.0], button).clicked() {
-                            if telemetry.status == ConnectionStatus::Connected {
-                                self.ctx.disconnect();
-                            } else {
-                                self.ctx.connect();
+                            match telemetry.status {
+                                ConnectionStatus::Connected => self.ctx.disconnect(),
+                                ConnectionStatus::Disconnected | ConnectionStatus::Error => self.ctx.connect(),
+                                ConnectionStatus::Connecting | ConnectionStatus::Stopping => {}
                             }
                         }
                     });
@@ -497,6 +506,7 @@ impl TeleRouteApp {
             ("Calls / media", telemetry.calls.clone()),
             ("TUN adapter", telemetry.tun.clone()),
             ("UDP transport", telemetry.udp.clone()),
+            ("Telegram client", telemetry.telegram_client.clone()),
             ("Active sessions", stats.active_connections.to_string()),
             ("Upload", human_bytes(stats.bytes_up)),
             ("Download", human_bytes(stats.bytes_down)),
@@ -535,8 +545,12 @@ impl TeleRouteApp {
                         self.page = Page::Diagnostics;
                     }
                 });
+                if telemetry.status == ConnectionStatus::Connected && active_sessions == 0 {
+                    ui.add_space(8.0);
+                    ui.small("Telegram reconnection note: TeleRoute cannot read which proxy is selected inside Telegram. It does not repeatedly reopen tg://proxy links, because doing so can create duplicate entries. Open Telegram Settings → Connection and select the existing TeleRoute proxy.");
+                }
                 ui.add_space(4.0);
-                ui.small("WSS latency measures the time to establish a WebSocket route, not an ICMP ping. Media WSS availability does not by itself verify an end-to-end Telegram call.");
+                ui.small("WSS latency is WebSocket setup time, not ICMP ping. Media WSS readiness verifies only that a media route accepted a handshake, not the full call or file-transfer path.");
             });
     }
     fn diagnostics_page(&mut self, ui: &mut egui::Ui) {

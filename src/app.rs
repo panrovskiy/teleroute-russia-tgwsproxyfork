@@ -8,13 +8,13 @@ use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConnectionStatus { Disconnected, Connecting, Connected, Error }
+pub enum ConnectionStatus { Disconnected, Connecting, Connected, Stopping, Error }
 impl Default for ConnectionStatus { fn default() -> Self { Self::Disconnected } }
 
 #[derive(Debug, Clone)]
-pub struct Telemetry { pub status: ConnectionStatus, pub transport: String, pub dc: String, pub tun: String, pub udp: String, pub calls: String, pub error: String }
+pub struct Telemetry { pub status: ConnectionStatus, pub transport: String, pub dc: String, pub tun: String, pub udp: String, pub calls: String, pub telegram_client: String, pub error: String }
 impl Default for Telemetry {
-    fn default() -> Self { Self { status: ConnectionStatus::Disconnected, transport: "—".into(), dc: "—".into(), tun: "INACTIVE".into(), udp: "UNKNOWN".into(), calls: "NOT READY".into(), error: String::new() } }
+    fn default() -> Self { Self { status: ConnectionStatus::Disconnected, transport: "—".into(), dc: "—".into(), tun: "INACTIVE".into(), udp: "UNKNOWN".into(), calls: "NOT READY".into(), telegram_client: "DISCONNECTED".into(), error: String::new() } }
 }
 
 #[derive(Clone)]
@@ -38,7 +38,7 @@ impl AppContext {
     pub fn connect(&self) {
         if matches!(
             self.telemetry.read().status,
-            ConnectionStatus::Connected | ConnectionStatus::Connecting
+            ConnectionStatus::Connected | ConnectionStatus::Connecting | ConnectionStatus::Stopping
         ) {
             return;
         }
@@ -54,6 +54,7 @@ impl AppContext {
             t.tun = "DISABLED".into();
             t.udp = "DISABLED".into();
             t.calls = "UNAVAILABLE".into();
+            t.telegram_client = "EXTERNAL MTProto HANDOFF".into();
             drop(t);
 
             #[cfg(windows)]
@@ -91,13 +92,18 @@ impl AppContext {
                 t.status = ConnectionStatus::Connected;
                 t.transport = "External MTProto".into();
                 t.dc = "remote proxy".into();
+                t.telegram_client = "EXTERNAL PROXY MANAGED BY TELEGRAM".into();
             }
 
             return;
         }
 
-        self.telemetry.write().status = ConnectionStatus::Connecting;
-        self.telemetry.write().error.clear();
+        {
+            let mut t = self.telemetry.write();
+            t.status = ConnectionStatus::Connecting;
+            t.error.clear();
+            t.telegram_client = "WAITING FOR TELEGRAM CLIENT".into();
+        }
 
         let stats = self.stats.clone();
         let telemetry = self.telemetry.clone();
@@ -133,9 +139,22 @@ impl AppContext {
                     let addr = listener.local_addr()?;
 
                     let child = token.child_token();
+                    let child_guard = child.clone();
+                    let lifetime = token.clone();
+                    let listener_telemetry = telemetry.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = server.run_on_listener(listener, child).await {
-                            tracing::error!(error = %e, "local MTProto frontend stopped");
+                        let result = server.run_on_listener(listener, child).await;
+                        if !child_guard.is_cancelled() {
+                            lifetime.cancel();
+                            let reason = match result {
+                                Ok(()) => "MTProto listener exited unexpectedly".to_owned(),
+                                Err(error) => format!("MTProto listener stopped: {error:#}"),
+                            };
+                            let mut status = listener_telemetry.write();
+                            status.status = ConnectionStatus::Error;
+                            status.telegram_client = "LISTENER STOPPED".into();
+                            status.error = reason.clone();
+                            tracing::error!(reason = %reason, "local MTProto frontend stopped unexpectedly");
                         }
                     });
 
@@ -227,9 +246,22 @@ impl AppContext {
                     }
 
                     let child = token.child_token();
+                    let child_guard = child.clone();
+                    let lifetime = token.clone();
+                    let listener_telemetry = telemetry.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = proxy.run_on_listener(listener, child).await {
-                            tracing::error!(error = %e, "SOCKS5 frontend stopped");
+                        let result = proxy.run_on_listener(listener, child).await;
+                        if !child_guard.is_cancelled() {
+                            lifetime.cancel();
+                            let reason = match result {
+                                Ok(()) => "SOCKS5 listener exited unexpectedly".to_owned(),
+                                Err(error) => format!("SOCKS5 listener stopped: {error:#}"),
+                            };
+                            let mut status = listener_telemetry.write();
+                            status.status = ConnectionStatus::Error;
+                            status.telegram_client = "LISTENER STOPPED".into();
+                            status.error = reason.clone();
+                            tracing::error!(reason = %reason, "SOCKS5 frontend stopped unexpectedly");
                         }
                     });
 
@@ -243,8 +275,10 @@ impl AppContext {
             let (transport, frontend_addr) = match frontend_result {
                 Ok(v) => v,
                 Err(e) => {
+                    token.cancel();
                     let mut t = telemetry.write();
                     t.status = ConnectionStatus::Error;
+                    t.telegram_client = "LISTENER FAILED TO START".into();
                     t.error = format!("Telegram frontend failed: {e}");
                     return;
                 }
@@ -311,12 +345,46 @@ impl AppContext {
                 t.status = ConnectionStatus::Connected;
                 t.transport = transport;
                 t.dc = "automatic".into();
+                t.telegram_client = "WAITING FOR TELEGRAM CLIENT".into();
                 t.error.clear();
             }
 
-            // "Connected" above means the local listener is running. Independently
-            // check the real media WSS route and measure its setup latency so the
-            // dashboard does not stay stuck at "NOT VERIFIED" or an empty ping.
+            // Track valid client sessions independently from listener health. If
+            // Telegram is closed or this proxy is no longer selected, the UI changes
+            // to "NO VALID TELEGRAM SESSION" instead of remaining green.
+            let session_stats = stats.clone();
+            let session_telemetry = telemetry.clone();
+            let session_shutdown = token.child_token();
+            tokio::spawn(async move {
+                loop {
+                    if session_shutdown.is_cancelled() {
+                        break;
+                    }
+
+                    let active = session_stats.active_connections.load(std::sync::atomic::Ordering::Relaxed);
+                    {
+                        let mut status = session_telemetry.write();
+                        if status.status == ConnectionStatus::Connected {
+                            status.telegram_client = if active > 0 {
+                                format!("CONNECTED · {active} active session(s)")
+                            } else {
+                                "NO VALID TELEGRAM SESSION".into()
+                            };
+                        } else if status.status == ConnectionStatus::Disconnected
+                            || status.status == ConnectionStatus::Stopping
+                        {
+                            break;
+                        }
+                    }
+
+                    tokio::select! {
+                        _ = session_shutdown.cancelled() => break,
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
+                    }
+                }
+            });
+
+            // Probe media WSS separately using the same route pool as real client sessions.
             let monitor_config = config.clone();
             let monitor_stats = stats.clone();
             let monitor_pool = mtproto_pool.clone();
@@ -375,24 +443,60 @@ impl AppContext {
 
 
     pub fn disconnect(&self) {
-        if let Some(token) = self.shutdown.write().take() {
+        let token = self.shutdown.write().take();
+        let stopping_local_frontend = token.is_some();
+        if let Some(token) = token {
             token.cancel();
         }
 
-        // Close any idle warmed upstream WSS sockets too. Keep the preferred
-        // endpoint hint so the next connection can retry the fastest known route.
+        // Close idle upstream WSS sockets and clear latency immediately. Preserve
+        // preferred route hints for the next start.
         let pool = self.ws_pool.clone();
         self.runtime.spawn(async move {
             pool.close_pooled_streams().await;
         });
 
         self.stats.ping_ms.store(0, std::sync::atomic::Ordering::Relaxed);
-        let mut t = self.telemetry.write();
-        t.status = ConnectionStatus::Disconnected;
-        t.transport = "—".into();
-        t.tun = "INACTIVE".into();
-        t.udp = "UNKNOWN".into();
-        t.calls = "NOT READY".into();
+        let mode = self.config.read().routing.mode;
+        {
+            let mut t = self.telemetry.write();
+            t.status = if stopping_local_frontend {
+                ConnectionStatus::Stopping
+            } else {
+                ConnectionStatus::Disconnected
+            };
+            t.transport = "—".into();
+            t.tun = "INACTIVE".into();
+            t.udp = "UNKNOWN".into();
+            t.calls = "NOT READY".into();
+            t.telegram_client = if mode == Mode::Mtproto {
+                "EXTERNAL PROXY MAY REMAIN ACTIVE".into()
+            } else if stopping_local_frontend {
+                "STOPPING".into()
+            } else {
+                "DISCONNECTED".into()
+            };
+            t.error = if mode == Mode::Mtproto {
+                "External MTProto is configured directly in Telegram. TeleRoute cannot stop that remote proxy; disable it in Telegram's Connection settings.".into()
+            } else {
+                String::new()
+            };
+        }
+
+        // Don't let a fast off/on click re-bind the local port before the canceled
+        // listener has had a chance to release it.
+        if stopping_local_frontend {
+            let telemetry = self.telemetry.clone();
+            self.runtime.spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+                let mut status = telemetry.write();
+                if status.status == ConnectionStatus::Stopping {
+                    status.status = ConnectionStatus::Disconnected;
+                    status.telegram_client = "DISCONNECTED".into();
+                    status.error.clear();
+                }
+            });
+        }
     }
 
     pub fn save_config(&self) -> anyhow::Result<()> {
