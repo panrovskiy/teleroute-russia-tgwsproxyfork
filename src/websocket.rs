@@ -423,7 +423,7 @@ impl WebSocketTransport {
         let stats_down = self.stats.clone();
 
         let up = async move {
-            let mut buf = vec![0u8; 16 * 1024];
+            let mut buf = vec![0u8; 64 * 1024];
             loop {
                 let n = client_r.read(&mut buf).await?;
                 if n == 0 { break; }
@@ -438,7 +438,7 @@ impl WebSocketTransport {
         };
 
         let down = async move {
-            let mut buf = vec![0u8; 16 * 1024];
+            let mut buf = vec![0u8; 64 * 1024];
             loop {
                 let n = upstream_r.read(&mut buf).await?;
                 if n == 0 { break; }
@@ -518,45 +518,45 @@ impl WebSocketTransport {
         };
 
         let down = async move {
-            // Media downloads can arrive as many small WebSocket binary messages.
-            // Coalesce them into bounded TCP writes instead of issuing write_all
-            // for every frame. The short timer keeps small interactive messages
-            // responsive when a batch doesn't fill.
-            const WRITE_BATCH_BYTES: usize = 128 * 1024;
-            const WRITE_BATCH_DELAY: Duration = Duration::from_millis(2);
+            // Keep merging frames while the media stream is active. A periodic
+            // timer can force repeated tiny writes on low-latency streams, so use
+            // an idle timeout only while there is data waiting to be sent.
+            const WRITE_BATCH_BYTES: usize = 512 * 1024;
+            const WRITE_BATCH_IDLE: Duration = Duration::from_millis(4);
             let mut pending = Vec::with_capacity(WRITE_BATCH_BYTES);
-            let mut flush_tick = tokio::time::interval_at(
-                tokio::time::Instant::now() + WRITE_BATCH_DELAY,
-                WRITE_BATCH_DELAY,
-            );
 
             loop {
-                tokio::select! {
-                    message = ws_r.next() => {
-                        let Some(message) = message else { break; };
-                        match message? {
-                            Message::Binary(data) => {
-                                let mut data = data.to_vec();
-                                upstream.decrypt.apply_keystream(&mut data);
-                                client_obfs.encrypt.apply_keystream(&mut data);
-                                stats_down.bytes_down.fetch_add(data.len() as u64, Ordering::Relaxed);
-                                stats_down.packets_down.fetch_add(1, Ordering::Relaxed);
-                                pending.extend_from_slice(&data);
-
-                                if pending.len() >= WRITE_BATCH_BYTES {
-                                    client_w.write_all(&pending).await?;
-                                    pending.clear();
-                                }
-                            }
-                            Message::Close(_) => break,
-                            Message::Ping(_) | Message::Pong(_) => {}
-                            _ => {}
+                let incoming = if pending.is_empty() {
+                    ws_r.next().await
+                } else {
+                    match timeout(WRITE_BATCH_IDLE, ws_r.next()).await {
+                        Ok(message) => message,
+                        Err(_) => {
+                            client_w.write_all(&pending).await?;
+                            pending.clear();
+                            continue;
                         }
                     }
-                    _ = flush_tick.tick(), if !pending.is_empty() => {
-                        client_w.write_all(&pending).await?;
-                        pending.clear();
+                };
+
+                let Some(message) = incoming else { break; };
+                match message? {
+                    Message::Binary(data) => {
+                        let mut data = data.to_vec();
+                        upstream.decrypt.apply_keystream(&mut data);
+                        client_obfs.encrypt.apply_keystream(&mut data);
+                        stats_down.bytes_down.fetch_add(data.len() as u64, Ordering::Relaxed);
+                        stats_down.packets_down.fetch_add(1, Ordering::Relaxed);
+                        pending.extend_from_slice(&data);
+
+                        if pending.len() >= WRITE_BATCH_BYTES {
+                            client_w.write_all(&pending).await?;
+                            pending.clear();
+                        }
                     }
+                    Message::Close(_) => break,
+                    Message::Ping(_) | Message::Pong(_) => {}
+                    _ => {}
                 }
             }
 
