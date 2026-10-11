@@ -14,11 +14,11 @@ pub struct Socks5Server {
 
 impl Socks5Server {
     pub fn new(config: AppConfig, stats: Arc<Statistics>) -> Self {
-        Self {
-            config,
-            stats,
-            ws_pool: WebSocketPool::default(),
-        }
+        Self::with_pool(config, stats, WebSocketPool::default())
+    }
+
+    pub fn with_pool(config: AppConfig, stats: Arc<Statistics>, ws_pool: WebSocketPool) -> Self {
+        Self { config, stats, ws_pool }
     }
 
     pub async fn warmup_wss_pool(&self) {
@@ -49,26 +49,27 @@ impl Socks5Server {
                 res = listener.accept() => {
                     let (stream, peer) = res?;
                     let this = self.clone();
+                    let client_shutdown = shutdown.child_token();
 
                     tokio::spawn(async move {
                         this.stats.connections.fetch_add(1, Ordering::Relaxed);
                         this.stats.active_connections.fetch_add(1, Ordering::Relaxed);
+                        let _active_connection = ActiveConnectionGuard(this.stats.clone());
+                        let handler = AssertUnwindSafe(this.handle(stream)).catch_unwind();
+                        tokio::pin!(handler);
 
-                        let result = AssertUnwindSafe(this.handle(stream))
-                            .catch_unwind()
-                            .await;
-
-                        match result {
-                            Ok(Ok(())) => {}
-                            Ok(Err(e)) => {
-                                debug!(peer = %peer, error = %e, "SOCKS5 connection closed");
+                        tokio::select! {
+                            _ = client_shutdown.cancelled() => {
+                                debug!(peer = %peer, "closing SOCKS5 session because proxy was disconnected");
                             }
-                            Err(panic) => {
-                                error!(peer = %peer, ?panic, "SOCKS5 connection handler panicked");
+                            result = &mut handler => {
+                                match result {
+                                    Ok(Ok(())) => {}
+                                    Ok(Err(e)) => debug!(peer = %peer, error = %e, "SOCKS5 connection closed"),
+                                    Err(panic) => error!(peer = %peer, ?panic, "SOCKS5 connection handler panicked"),
+                                }
                             }
                         }
-
-                        this.stats.active_connections.fetch_sub(1, Ordering::Relaxed);
                     });
                 }
             }
@@ -323,6 +324,14 @@ pub async fn send_failure(stream: &mut TcpStream, code: u8) -> anyhow::Result<()
         .write_all(&[5, code, 0, 1, 0, 0, 0, 0, 0, 0])
         .await?;
     Ok(())
+}
+
+struct ActiveConnectionGuard(Arc<Statistics>);
+
+impl Drop for ActiveConnectionGuard {
+    fn drop(&mut self) {
+        self.0.active_connections.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 fn looks_like_telegram_destination(host: &str, cidrs: &[String]) -> bool {
