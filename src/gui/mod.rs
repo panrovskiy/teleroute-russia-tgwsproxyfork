@@ -94,7 +94,7 @@ impl TeleRouteApp {
         match self.ctx.status().status { ConnectionStatus::Connected => "ПРОКСИ ГОТОВ", ConnectionStatus::Connecting => "ПОДКЛЮЧЕНИЕ", ConnectionStatus::Stopping => "ОСТАНОВКА", ConnectionStatus::Error => "ОШИБКА", ConnectionStatus::Disconnected => "ОТКЛЮЧЕНО" }
     }
 
-    fn mode_text(&self) -> String { format!("{:?}", self.ctx.config.read().routing.mode) }
+    fn mode_text(&self) -> String { mode_label(self.ctx.config.read().routing.mode).to_owned() }
 
     fn refresh_logs(&mut self) {
         let mut files: Vec<_> = std::fs::read_dir(crate::config::AppConfig::logs_dir()).ok().into_iter().flatten().flatten().collect();
@@ -410,7 +410,7 @@ impl TeleRouteApp {
             "—".into()
         };
         let dc_text = stats.current_dc
-            .map(|value| format!("DC {value}"))
+            .map(|value| format!("ЦОД {value}"))
             .unwrap_or_else(|| telemetry.dc.clone());
 
         let (status_label, status_color, status_detail) = match telemetry.status {
@@ -473,9 +473,9 @@ impl TeleRouteApp {
                         ui.horizontal_wrapped(|ui| {
                             ui.label(egui::RichText::new(format!("Прокси  {}", frontend_label(config.telegram.frontend))).strong());
                             ui.separator();
-                            ui.label(egui::RichText::new(format!("Transport  {transport_text}")).strong());
+                            ui.label(egui::RichText::new(format!("Транспорт  {transport_text}")).strong());
                             ui.separator();
-                            ui.label(egui::RichText::new(format!("Route  {dc_text}")).strong());
+                            ui.label(egui::RichText::new(format!("Маршрут  {dc_text}")).strong());
                         });
                     });
 
@@ -503,7 +503,7 @@ impl TeleRouteApp {
         ui.add_space(4.0);
 
         let values = [
-            ("Задержка WSS", stats.ping_ms.map(|value| format!("{value} ms")).unwrap_or_else(|| if telemetry.status == ConnectionStatus::Connected { "Проверка…".into() } else { "—".into() })),
+            ("Задержка WSS", stats.ping_ms.map(|value| format!("{value} мс")).unwrap_or_else(|| if telemetry.status == ConnectionStatus::Connected { "Проверка…".into() } else { "—".into() })),
             ("Звонки и медиа", localize_status(&telemetry.calls)),
             ("Адаптер TUN", localize_status(&telemetry.tun)),
             ("Транспорт UDP", localize_status(&telemetry.udp)),
@@ -641,7 +641,7 @@ impl TeleRouteApp {
         ui.add_space(10.0);
         let stats = self.ctx.snapshot();
         let values = [
-            ("Задержка маршрута WSS", stats.ping_ms.map(|v| format!("{v} ms")).unwrap_or_else(|| "—".into())),
+            ("Задержка маршрута WSS", stats.ping_ms.map(|v| format!("{v} мс")).unwrap_or_else(|| "—".into())),
             ("Всего соединений", stats.connections.to_string()),
             ("Активные соединения", stats.active_connections.to_string()),
             ("Отправлено", human_bytes(stats.bytes_up)),
@@ -654,7 +654,7 @@ impl TeleRouteApp {
             ("Заблокировано UDP", stats.udp_blocked.to_string()),
             ("Отправлено в звонках", human_bytes(stats.call_bytes_up)),
             ("Получено в звонках", human_bytes(stats.call_bytes_down)),
-            ("Джиттер звонков", stats.call_jitter_ms.map(|v| format!("{v} ms")).unwrap_or_else(|| "—".into())),
+            ("Джиттер звонков", stats.call_jitter_ms.map(|v| format!("{v} мс")).unwrap_or_else(|| "—".into())),
         ];
         let columns = ((ui.available_width() / 230.0).floor() as usize).clamp(1, 4);
         for row in values.chunks(columns) {
