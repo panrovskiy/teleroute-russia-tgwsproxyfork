@@ -92,13 +92,6 @@ Only technical metadata is logged: connection state, transport, DC, counters, la
 
 MIT. See `LICENSE`.
 
-## Quick build
-
-On Windows, install Rust and the MSVC C++ build tools, then double-click `build.bat`.
-The executables are created under `target\\release`.
-
-For CI, the repository includes `.github/workflows/build-windows.yml`; run the workflow manually to produce a Windows x64 artifact.
-
 ## GUI and Windows launch
 
 The main `tele-route.exe` binary is built as a Windows GUI application, so launching it by double-click does **not** open a console window. Runtime diagnostics and errors are written to the application log directory instead. The `call-relay.exe` helper remains a console/server binary intentionally.
