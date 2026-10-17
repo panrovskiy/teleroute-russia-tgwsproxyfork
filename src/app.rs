@@ -25,10 +25,11 @@ pub struct AppContext {
     ws_pool: crate::websocket::WebSocketPool,
     runtime: Arc<Runtime>,
     shutdown: Arc<RwLock<Option<CancellationToken>>>,
+    frontend_task: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
 }
 impl AppContext {
     pub fn new(config: AppConfig, runtime: Runtime) -> Self {
-        Self { config: Arc::new(RwLock::new(config)), stats: Arc::new(Statistics::default()), telemetry: Arc::new(RwLock::new(Telemetry::default())), ws_pool: crate::websocket::WebSocketPool::default(), runtime: Arc::new(runtime), shutdown: Arc::new(RwLock::new(None)) }
+        Self { config: Arc::new(RwLock::new(config)), stats: Arc::new(Statistics::default()), telemetry: Arc::new(RwLock::new(Telemetry::default())), ws_pool: crate::websocket::WebSocketPool::default(), runtime: Arc::new(runtime), shutdown: Arc::new(RwLock::new(None)), frontend_task: Arc::new(RwLock::new(None)) }
     }
 
     pub fn snapshot(&self) -> StatsSnapshot { self.stats.snapshot() }
@@ -109,6 +110,7 @@ impl AppContext {
         let telemetry = self.telemetry.clone();
         let config_store = self.config.clone();
         let ws_pool = self.ws_pool.clone();
+        let frontend_task_store = self.frontend_task.clone();
         let token = CancellationToken::new();
         *self.shutdown.write() = Some(token.clone());
 
@@ -142,7 +144,8 @@ impl AppContext {
                     let child_guard = child.clone();
                     let lifetime = token.clone();
                     let listener_telemetry = telemetry.clone();
-                    tokio::spawn(async move {
+                    let listener_task_store = frontend_task_store.clone();
+                    let listener_task = tokio::spawn(async move {
                         let result = server.run_on_listener(listener, child).await;
                         if !child_guard.is_cancelled() {
                             lifetime.cancel();
@@ -155,8 +158,11 @@ impl AppContext {
                             status.telegram_client = "LISTENER STOPPED".into();
                             status.error = reason.clone();
                             tracing::error!(reason = %reason, "local MTProto frontend stopped unexpectedly");
+                        } else {
+                            tracing::info!("local MTProto listener exited after shutdown");
                         }
                     });
+                    *listener_task_store.write() = Some(listener_task);
 
                     #[cfg(windows)]
                     {
@@ -249,7 +255,8 @@ impl AppContext {
                     let child_guard = child.clone();
                     let lifetime = token.clone();
                     let listener_telemetry = telemetry.clone();
-                    tokio::spawn(async move {
+                    let listener_task_store = frontend_task_store.clone();
+                    let listener_task = tokio::spawn(async move {
                         let result = proxy.run_on_listener(listener, child).await;
                         if !child_guard.is_cancelled() {
                             lifetime.cancel();
@@ -262,8 +269,11 @@ impl AppContext {
                             status.telegram_client = "LISTENER STOPPED".into();
                             status.error = reason.clone();
                             tracing::error!(reason = %reason, "SOCKS5 frontend stopped unexpectedly");
+                        } else {
+                            tracing::info!("local SOCKS5 listener exited after shutdown");
                         }
                     });
+                    *listener_task_store.write() = Some(listener_task);
 
                     Ok((
                         "SOCKS5".into(),
@@ -411,19 +421,33 @@ impl AppContext {
 
                     match result {
                         Ok(Some(latency_ms)) => {
-                            monitor_stats.ping_ms.store(
-                                latency_ms.max(1),
-                                std::sync::atomic::Ordering::Relaxed,
-                            );
-                            let mut status = monitor_telemetry.write();
-                            if status.status != ConnectionStatus::Disconnected {
-                                status.calls = "MEDIA WSS READY · CALL NOT END-TO-END TESTED".into();
+                            if latency_ms > 0 {
+                                monitor_stats.ping_ms.store(
+                                    latency_ms,
+                                    std::sync::atomic::Ordering::Relaxed,
+                                );
                             }
-                            tracing::info!(latency_ms, "Telegram media WSS route is reachable");
+                            let mut status = monitor_telemetry.write();
+                            if status.status != ConnectionStatus::Disconnected
+                                && status.status != ConnectionStatus::Stopping
+                            {
+                                status.calls = if latency_ms > 0 {
+                                    "MEDIA WSS READY · CALL NOT END-TO-END TESTED".into()
+                                } else {
+                                    "MEDIA WSS RECENTLY VERIFIED · CALL NOT END-TO-END TESTED".into()
+                                };
+                            }
+                            tracing::info!(latency_ms, "Telegram media WSS route is reachable or was recently verified");
                         }
                         Ok(None) | Err(_) => {
+                            // A probe can fail transiently after an earlier media
+                            // route succeeded. The probe itself applies a short
+                            // last-success grace window; None means no recent route
+                            // was available either.
                             let mut status = monitor_telemetry.write();
-                            if status.status != ConnectionStatus::Disconnected {
+                            if status.status != ConnectionStatus::Disconnected
+                                && status.status != ConnectionStatus::Stopping
+                            {
                                 status.calls = "MEDIA WSS FAILED".into();
                             }
                             tracing::warn!("Telegram media WSS route probe failed");
@@ -444,17 +468,11 @@ impl AppContext {
 
     pub fn disconnect(&self) {
         let token = self.shutdown.write().take();
-        let stopping_local_frontend = token.is_some();
+        let listener_task = self.frontend_task.write().take();
+        let stopping_local_frontend = token.is_some() || listener_task.is_some();
         if let Some(token) = token {
             token.cancel();
         }
-
-        // Close idle upstream WSS sockets and clear latency immediately. Preserve
-        // preferred route hints for the next start.
-        let pool = self.ws_pool.clone();
-        self.runtime.spawn(async move {
-            pool.close_pooled_streams().await;
-        });
 
         self.stats.ping_ms.store(0, std::sync::atomic::Ordering::Relaxed);
         let mode = self.config.read().routing.mode;
@@ -469,32 +487,93 @@ impl AppContext {
             t.tun = "INACTIVE".into();
             t.udp = "UNKNOWN".into();
             t.calls = "NOT READY".into();
-            t.telegram_client = if mode == Mode::Mtproto {
+            t.telegram_client = if mode == Mode::Mtproto && !stopping_local_frontend {
                 "EXTERNAL PROXY MAY REMAIN ACTIVE".into()
             } else if stopping_local_frontend {
-                "STOPPING".into()
+                "STOPPING LOCAL LISTENER".into()
             } else {
                 "DISCONNECTED".into()
             };
-            t.error = if mode == Mode::Mtproto {
-                "External MTProto is configured directly in Telegram. TeleRoute cannot stop that remote proxy; disable it in Telegram's Connection settings.".into()
+            t.error = if mode == Mode::Mtproto && !stopping_local_frontend {
+                "This mode hands an external MTProto server to Telegram. TeleRoute cannot switch off that remote service; disable the selected proxy in Telegram's Connection settings.".into()
             } else {
                 String::new()
             };
         }
 
-        // Don't let a fast off/on click re-bind the local port before the canceled
-        // listener has had a chance to release it.
-        if stopping_local_frontend {
-            let telemetry = self.telemetry.clone();
+        let pool = self.ws_pool.clone();
+        let telemetry = self.telemetry.clone();
+        let stats = self.stats.clone();
+
+        if let Some(mut listener_task) = listener_task {
+            // Wait for the real listener future to exit before telling the UI
+            // that the local proxy is off. A fixed sleep can show DISCONNECTED
+            // while the server still owns its listening socket.
             self.runtime.spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+                let stopped = tokio::time::timeout(
+                    std::time::Duration::from_secs(4),
+                    &mut listener_task,
+                )
+                .await
+                .is_ok();
+
+                if !stopped {
+                    listener_task.abort();
+                    let _ = listener_task.await;
+                    pool.close_pooled_streams().await;
+                    let mut status = telemetry.write();
+                    if status.status == ConnectionStatus::Stopping {
+                        status.status = ConnectionStatus::Error;
+                        status.telegram_client = "LISTENER FORCED TO STOP".into();
+                        status.error = "The local listener did not shut down cleanly; its task was stopped forcibly.".into();
+                    }
+                    tracing::error!("local Telegram listener exceeded the shutdown timeout");
+                    return;
+                }
+
+                // Sessions inherit the same cancellation token. Give their
+                // guards a short window to drop counters before reporting stop.
+                let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+                while stats.active_connections.load(std::sync::atomic::Ordering::Relaxed) > 0
+                    && tokio::time::Instant::now() < deadline
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+
+                pool.close_pooled_streams().await;
+                let active = stats.active_connections.load(std::sync::atomic::Ordering::Relaxed);
+                let mut status = telemetry.write();
+                if status.status == ConnectionStatus::Stopping {
+                    if active == 0 {
+                        status.status = ConnectionStatus::Disconnected;
+                        status.telegram_client = "DISCONNECTED · LOCAL LISTENER STOPPED".into();
+                        status.error.clear();
+                        tracing::info!("local Telegram listener stopped; listening socket released");
+                    } else {
+                        status.status = ConnectionStatus::Error;
+                        status.telegram_client = "CLIENT SESSIONS STILL CLOSING".into();
+                        status.error = format!("{active} local client session(s) did not close in time.");
+                        tracing::error!(active, "local client sessions did not drain during shutdown");
+                    }
+                }
+            });
+        } else if stopping_local_frontend {
+            // Disconnect was clicked while the listener was still being created.
+            // The startup task checks the same cancelled token before publishing
+            // Connected; its child listeners are cancelled as soon as they start.
+            self.runtime.spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+                pool.close_pooled_streams().await;
                 let mut status = telemetry.write();
                 if status.status == ConnectionStatus::Stopping {
                     status.status = ConnectionStatus::Disconnected;
-                    status.telegram_client = "DISCONNECTED".into();
+                    status.telegram_client = "DISCONNECTED · STARTUP CANCELLED".into();
                     status.error.clear();
                 }
+            });
+        } else {
+            self.runtime.spawn(async move {
+                pool.close_pooled_streams().await;
             });
         }
     }

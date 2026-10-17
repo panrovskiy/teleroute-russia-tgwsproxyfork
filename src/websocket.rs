@@ -15,6 +15,7 @@ pub struct WebSocketPool {
     // Remember a recently successful route per DC/media/test-DC tuple so
     // subsequent Telegram connections do not repeat cold endpoint discovery.
     preferred: Arc<Mutex<HashMap<(u16, bool, bool), String>>>,
+    recent_success: Arc<Mutex<HashMap<(u16, bool, bool), (Instant, i64)>>>,
 }
 impl WebSocketPool {
     pub async fn take(&self, dc: u16, media: bool, is_test_dc: bool) -> Option<WsStream> {
@@ -29,14 +30,39 @@ impl WebSocketPool {
     /// Keep successful endpoint preferences so the next start can reconnect quickly.
     pub async fn close_pooled_streams(&self) {
         self.inner.lock().await.clear();
+        self.recent_success.lock().await.clear();
     }
 
     async fn preferred(&self, dc: u16, media: bool, is_test_dc: bool) -> Option<String> {
         self.preferred.lock().await.get(&(dc, media, is_test_dc)).cloned()
     }
 
-    async fn remember(&self, dc: u16, media: bool, is_test_dc: bool, url: &str) {
-        self.preferred.lock().await.insert((dc, media, is_test_dc), url.to_owned());
+    async fn remember(
+        &self,
+        dc: u16,
+        media: bool,
+        is_test_dc: bool,
+        url: &str,
+        latency_ms: i64,
+    ) {
+        let key = (dc, media, is_test_dc);
+        self.preferred.lock().await.insert(key, url.to_owned());
+        self.recent_success.lock().await.insert(
+            key,
+            (Instant::now(), latency_ms.max(1)),
+        );
+    }
+
+    async fn recent_success_latency(&self, media: bool, max_age: Duration) -> Option<i64> {
+        self.recent_success
+            .lock()
+            .await
+            .iter()
+            .filter(|((_, route_media, _), (timestamp, _))| {
+                *route_media == media && timestamp.elapsed() <= max_age
+            })
+            .max_by_key(|(_, (timestamp, _))| *timestamp)
+            .map(|(_, (_, latency_ms))| *latency_ms)
     }
 
     async fn forget(&self, dc: u16, media: bool, is_test_dc: bool) {
@@ -72,21 +98,23 @@ impl WebSocketPool {
                             let attempt_url = url.clone();
                             let transport_ref = &transport;
                             attempts.push(async move {
+                                let started = Instant::now();
                                 let target_ip = target_ip_for_url(&attempt_url, dc, false);
                                 let result = timeout(
                                     deadline,
                                     transport_ref.connect(&attempt_url, dc, target_ip),
                                 ).await;
-                                (url, result)
+                                let latency_ms = started.elapsed().as_millis().max(1) as i64;
+                                (url, result, latency_ms)
                             }.boxed());
                         }
                     }
 
                     let mut connected = None;
-                    while let Some((url, result)) = attempts.next().await {
+                    while let Some((url, result, latency_ms)) = attempts.next().await {
                         match result {
                             Ok(Ok((ws, _))) => {
-                                connected = Some((url, ws));
+                                connected = Some((url, ws, latency_ms));
                                 break;
                             }
                             _ => {
@@ -94,20 +122,22 @@ impl WebSocketPool {
                                     let attempt_url = next_url.clone();
                                     let transport_ref = &transport;
                                     attempts.push(async move {
+                                        let started = Instant::now();
                                         let target_ip = target_ip_for_url(&attempt_url, dc, false);
                                         let result = timeout(
                                             deadline,
                                             transport_ref.connect(&attempt_url, dc, target_ip),
                                         ).await;
-                                        (next_url, result)
+                                        let latency_ms = started.elapsed().as_millis().max(1) as i64;
+                                        (next_url, result, latency_ms)
                                     }.boxed());
                                 }
                             }
                         }
                     }
 
-                    if let Some((url, ws)) = connected {
-                        self.remember(dc, media, false, &url).await;
+                    if let Some((url, ws, latency_ms)) = connected {
+                        self.remember(dc, media, false, &url, latency_ms).await;
                         self.inner.lock().await.entry(key).or_default().push(ws);
                     } else {
                         break;
@@ -184,11 +214,9 @@ impl WebSocketTransport {
                     preferred_timeout,
                     self.connect(&preferred_url, dc_id, target_ip),
                 ).await {
-                    self.stats.ping_ms.store(
-                        connect_started.elapsed().as_millis().max(1) as i64,
-                        Ordering::Relaxed,
-                    );
-                    self.pool.remember(dc_id, media, is_test_dc, &preferred_url).await;
+                    let latency_ms = connect_started.elapsed().as_millis().max(1) as i64;
+                    self.stats.ping_ms.store(latency_ms, Ordering::Relaxed);
+                    self.pool.remember(dc_id, media, is_test_dc, &preferred_url, latency_ms).await;
                     self.stats.ws_success.fetch_add(1, Ordering::Relaxed);
                     self.stats.current_dc.store(dc_id as i64, Ordering::Relaxed);
                     self.stats.current_transport.store(1, Ordering::Relaxed);
@@ -233,7 +261,7 @@ impl WebSocketTransport {
             match result {
                 Ok(Ok((mut ws, _))) => {
                     self.stats.ping_ms.store(elapsed_ms, Ordering::Relaxed);
-                    self.pool.remember(dc_id, media, is_test_dc, &url).await;
+                    self.pool.remember(dc_id, media, is_test_dc, &url, elapsed_ms).await;
                     self.stats.ws_success.fetch_add(1, Ordering::Relaxed);
                     self.stats.current_dc.store(dc_id as i64, Ordering::Relaxed);
                     self.stats.current_transport.store(1, Ordering::Relaxed);
@@ -786,9 +814,12 @@ async fn probe_route_with_pool(
         }
     }
 
+    let recent_latency = transport.pool
+        .recent_success_latency(media, Duration::from_secs(90))
+        .await;
     let mut remaining = routes.into_iter().take(20);
     let mut attempts = futures_util::stream::FuturesUnordered::new();
-    let deadline = Duration::from_millis(config.timeouts.connect_ms.min(3500).max(1500));
+    let deadline = Duration::from_millis(config.timeouts.connect_ms.min(1800).max(500));
 
     for _ in 0..4 {
         if let Some((dc_id, url)) = remaining.next() {
@@ -806,9 +837,18 @@ async fn probe_route_with_pool(
 
     while let Some((dc_id, url, result, elapsed_ms)) = attempts.next().await {
         if let Ok(Ok((ws, _))) = result {
-            transport.pool.remember(dc_id, media, false, &url).await;
+            transport.pool.remember(dc_id, media, false, &url, elapsed_ms).await;
             drop(ws);
             return Some(elapsed_ms);
+        }
+
+        if let Some(latency_ms) = recent_latency {
+            tracing::debug!(
+                dc = dc_id,
+                media,
+                "fresh WSS probe failed; keeping the recently successful route status"
+            );
+            return Some(latency_ms);
         }
 
         if let Some((dc_id, url)) = remaining.next() {
