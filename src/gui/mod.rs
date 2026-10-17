@@ -278,7 +278,8 @@ impl eframe::App for TeleRouteApp {
                                 if ui.add_sized([128.0, 38.0], egui::Button::new("Disconnect").fill(egui::Color32::from_rgb(134, 53, 68))).clicked() {
                                     self.ctx.disconnect();
                                 }
-                            } else if header_status.status != ConnectionStatus::Connecting {
+                            } else if header_status.status != ConnectionStatus::Connecting
+                                && header_status.status != ConnectionStatus::Stopping {
                                 if ui.add_sized([128.0, 38.0], egui::Button::new("Connect").fill(egui::Color32::from_rgb(35, 126, 92))).clicked() {
                                     self.ctx.connect();
                                 }
@@ -769,7 +770,7 @@ impl TeleRouteApp {
             ));
             if ui.button("Mark current MTProto as already configured").clicked() {
                 cfg.telegram.configured_mtproto = Some(format!(
-                    "v3:{}:{}:{}",
+                    "v4:{}:{}:{}",
                     cfg.mtproto.server.trim(),
                     cfg.mtproto.port,
                     cfg.mtproto.secret.trim()
@@ -800,7 +801,8 @@ impl TeleRouteApp {
 
             match cfg.telegram.frontend {
                 TelegramFrontend::MtprotoWs => {
-                    ui.label("Uses the standard dd-prefixed MTProto link; ee/Fake-TLS mode is not enabled by this listener.");
+                    ui.label("Uses a regular 32-character hexadecimal secret; Fake-TLS (dd-prefixed) links are not supported by this listener.");
+                    ui.small("Telegram may keep saved proxy entries after TeleRoute stops. A local entry cannot carry traffic once the local listener is stopped; an external MTProto proxy must be disabled inside Telegram.");
                     ui.horizontal(|ui| {
                         ui.label("Local port");
                         ui.add(egui::Slider::new(&mut cfg.telegram.mtproto_port, 1..=65535));
