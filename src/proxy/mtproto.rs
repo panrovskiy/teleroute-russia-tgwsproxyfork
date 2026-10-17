@@ -94,7 +94,7 @@ impl MtprotoServer {
         let mut header = [0u8; 64];
         timeout(Duration::from_secs(10), stream.read_exact(&mut header)).await??;
 
-        let client_obfs = match obfs2::parse_secret_server_header(header, &self.secret) {
+        let client_obfs = match obfs2::parse_secret_server_header_compatible(header, &self.secret) {
             Ok(v) => v,
             Err(e) => {
                 warn!(error = %e, "invalid Telegram MTProto handshake");

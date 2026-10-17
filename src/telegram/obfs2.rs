@@ -42,7 +42,7 @@ fn filtered_random_header() -> [u8; 64] {
     }
 }
 
-pub fn parse_secret_server_header(wire: [u8; 64], secret: &[u8; 16]) -> io::Result<ServerObfs> {
+pub fn parse_secret_server_header(wire: [u8; 64], secret: &[u8]) -> io::Result<ServerObfs> {
     let prekey_iv = &wire[8..56];
 
     let mut hasher = Sha256::new();
@@ -101,6 +101,24 @@ pub fn parse_secret_server_header(wire: [u8; 64], secret: &[u8; 16]) -> io::Resu
     })
 }
 
+pub fn parse_secret_server_header_compatible(
+    wire: [u8; 64],
+    secret: &[u8; 16],
+) -> io::Result<ServerObfs> {
+    match parse_secret_server_header(wire, secret) {
+        Ok(parsed) => Ok(parsed),
+        Err(plain_error) => {
+            // Older TeleRoute builds created Telegram links with the dd
+            // prefix. Telegram treats it as a 17-byte secret whose first byte
+            // selects padded-intermediate transport.
+            let mut padded_secret = [0u8; 17];
+            padded_secret[0] = 0xdd;
+            padded_secret[1..].copy_from_slice(secret);
+            parse_secret_server_header(wire, &padded_secret).map_err(|_| plain_error)
+        }
+    }
+}
+
 pub fn parse_server_header(wire: [u8; 64]) -> io::Result<ServerObfs> {
     let key = &wire[8..40];
     let iv = &wire[40..56];
@@ -147,6 +165,39 @@ pub fn new_client(protocol: [u8; 4], dc: i16) -> io::Result<ClientObfs> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn roundtrip_dd_prefixed_secret_is_accepted() {
+        let secret = [0x11u8; 16];
+        let mut padded_secret = [0u8; 17];
+        padded_secret[0] = 0xdd;
+        padded_secret[1..].copy_from_slice(&secret);
+        let header = filtered_random_header();
+
+        let protocol = *b"\xdd\xdd\xdd\xdd";
+        let dc = -2i16;
+        let mut tail_plain = [0u8; 8];
+        tail_plain[..4].copy_from_slice(&protocol);
+        tail_plain[4..6].copy_from_slice(&dc.to_le_bytes());
+        tail_plain[6..8].copy_from_slice(&[0x12, 0x34]);
+
+        let mut hasher = Sha256::new();
+        hasher.update(&header[8..40]);
+        hasher.update(&padded_secret);
+        let key = hasher.finalize();
+        let mut cipher = make_cipher(&key, &header[40..56]).unwrap();
+        let mut keystream = [0u8; 64];
+        cipher.apply_keystream(&mut keystream);
+
+        let mut wire = header;
+        for i in 0..8 {
+            wire[56 + i] = tail_plain[i] ^ keystream[56 + i];
+        }
+
+        let parsed = parse_secret_server_header_compatible(wire, &secret).unwrap();
+        assert_eq!(parsed.parsed.protocol, protocol);
+        assert_eq!(parsed.parsed.dc, dc);
+    }
 
     #[test]
     fn roundtrip_header_parse() {
