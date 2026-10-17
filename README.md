@@ -77,14 +77,6 @@ See `config.example.toml` for all fields.
 
 The container does not contain the Rust toolchain or a Windows runtime, so no claim of a successful Windows build or a completed real Telegram call is made here.
 
-## Build
-
-See `BUILD.md`.
-
-```powershell
-cargo build --release
-```
-
 ## Logs
 
 Only technical metadata is logged: connection state, transport, DC, counters, latency and errors. TeleRoute does not intentionally log Telegram message content, audio/video payloads, cookies or credentials.
