@@ -91,7 +91,7 @@ impl TeleRouteApp {
     }
 
     fn status_text(&self) -> &'static str {
-        match self.ctx.status().status { ConnectionStatus::Connected => "LISTENER READY", ConnectionStatus::Connecting => "CONNECTING", ConnectionStatus::Stopping => "STOPPING", ConnectionStatus::Error => "ERROR", ConnectionStatus::Disconnected => "DISCONNECTED" }
+        match self.ctx.status().status { ConnectionStatus::Connected => "ПРОКСИ ГОТОВ", ConnectionStatus::Connecting => "ПОДКЛЮЧЕНИЕ", ConnectionStatus::Stopping => "ОСТАНОВКА", ConnectionStatus::Error => "ОШИБКА", ConnectionStatus::Disconnected => "ОТКЛЮЧЕНО" }
     }
 
     fn mode_text(&self) -> String { format!("{:?}", self.ctx.config.read().routing.mode) }
@@ -246,11 +246,11 @@ impl eframe::App for TeleRouteApp {
 
         let header_status = self.ctx.status();
         let (header_text, header_color) = match header_status.status {
-            ConnectionStatus::Connected => ("LOCAL LISTENER READY", egui::Color32::from_rgb(82, 205, 145)),
-            ConnectionStatus::Connecting => ("STARTING", egui::Color32::from_rgb(242, 189, 91)),
-            ConnectionStatus::Stopping => ("STOPPING", egui::Color32::from_rgb(242, 189, 91)),
-            ConnectionStatus::Error => ("NEEDS ATTENTION", egui::Color32::from_rgb(238, 103, 110)),
-            ConnectionStatus::Disconnected => ("OFFLINE", egui::Color32::from_rgb(155, 167, 184)),
+            ConnectionStatus::Connected => ("ЛОКАЛЬНЫЙ ПРОКСИ ГОТОВ", egui::Color32::from_rgb(82, 205, 145)),
+            ConnectionStatus::Connecting => ("ЗАПУСК", egui::Color32::from_rgb(242, 189, 91)),
+            ConnectionStatus::Stopping => ("ОСТАНОВКА", egui::Color32::from_rgb(242, 189, 91)),
+            ConnectionStatus::Error => ("ТРЕБУЕТ ВНИМАНИЯ", egui::Color32::from_rgb(238, 103, 110)),
+            ConnectionStatus::Disconnected => ("НЕ ПОДКЛЮЧЕНО", egui::Color32::from_rgb(155, 167, 184)),
         };
 
         egui::Panel::top("top").show(ui, |ui| {
@@ -268,19 +268,19 @@ impl eframe::App for TeleRouteApp {
                             });
                         ui.vertical(|ui| {
                             ui.heading(egui::RichText::new("TeleRoute").size(22.0).strong());
-                            ui.label(egui::RichText::new("Telegram connection manager").size(12.0).weak());
+                            ui.label(egui::RichText::new("Управление подключением к Telegram").size(12.0).weak());
                         });
                         ui.add_space(12.0);
                         ui.separator();
                         ui.label(egui::RichText::new(header_text).strong().color(header_color));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if header_status.status == ConnectionStatus::Connected {
-                                if ui.add_sized([128.0, 38.0], egui::Button::new("Disconnect").fill(egui::Color32::from_rgb(134, 53, 68))).clicked() {
+                                if ui.add_sized([128.0, 38.0], egui::Button::new("Отключить").fill(egui::Color32::from_rgb(134, 53, 68))).clicked() {
                                     self.ctx.disconnect();
                                 }
                             } else if header_status.status != ConnectionStatus::Connecting
                                 && header_status.status != ConnectionStatus::Stopping {
-                                if ui.add_sized([128.0, 38.0], egui::Button::new("Connect").fill(egui::Color32::from_rgb(35, 126, 92))).clicked() {
+                                if ui.add_sized([128.0, 38.0], egui::Button::new("Подключить").fill(egui::Color32::from_rgb(35, 126, 92))).clicked() {
                                     self.ctx.connect();
                                 }
                             } else {
@@ -327,11 +327,11 @@ impl eframe::App for TeleRouteApp {
 impl TeleRouteApp {
     fn navigation(&mut self, ui: &mut egui::Ui, compact: bool) {
         let items = [
-            (Page::Connection, "Overview"),
-            (Page::Diagnostics, "Diagnostics"),
-            (Page::Statistics, "Statistics"),
-            (Page::Logs, "Logs"),
-            (Page::Settings, "Settings"),
+            (Page::Connection, "Обзор"),
+            (Page::Diagnostics, "Диагностика"),
+            (Page::Statistics, "Статистика"),
+            (Page::Logs, "Журнал"),
+            (Page::Settings, "Настройки"),
         ];
 
         if compact {
@@ -350,7 +350,7 @@ impl TeleRouteApp {
             .fill(egui::Color32::from_rgb(14, 20, 30))
             .inner_margin(egui::Margin::same(14))
             .show(ui, |ui| {
-                ui.label(egui::RichText::new("WORKSPACE").size(11.0).strong().color(egui::Color32::from_rgb(122, 145, 174)));
+                ui.label(egui::RichText::new("РАБОЧЕЕ ПРОСТРАНСТВО").size(11.0).strong().color(egui::Color32::from_rgb(122, 145, 174)));
                 ui.add_space(8.0);
 
                 for (index, (page, name)) in items.iter().enumerate() {
@@ -363,15 +363,15 @@ impl TeleRouteApp {
                 ui.add_space(18.0);
                 ui.separator();
                 ui.add_space(8.0);
-                ui.label(egui::RichText::new("QUICK STATUS").size(11.0).strong().color(egui::Color32::from_rgb(122, 145, 174)));
+                ui.label(egui::RichText::new("СОСТОЯНИЕ").size(11.0).strong().color(egui::Color32::from_rgb(122, 145, 174)));
 
                 let status = self.ctx.status();
                 let status_text = match status.status {
-                    ConnectionStatus::Connected => "Listener running",
-                    ConnectionStatus::Connecting => "Starting services",
-                    ConnectionStatus::Stopping => "Stopping listeners",
-                    ConnectionStatus::Error => "Startup error",
-                    ConnectionStatus::Disconnected => "Disconnected",
+                    ConnectionStatus::Connected => "Локальный прокси запущен",
+                    ConnectionStatus::Connecting => "Запуск служб",
+                    ConnectionStatus::Stopping => "Остановка слушателей",
+                    ConnectionStatus::Error => "Ошибка запуска",
+                    ConnectionStatus::Disconnected => "Отключено",
                 };
                 let status_color = match status.status {
                     ConnectionStatus::Connected => egui::Color32::from_rgb(82, 205, 145),
@@ -386,12 +386,12 @@ impl TeleRouteApp {
                     .show(ui, |ui| {
                         ui.label(egui::RichText::new(status_text).strong().color(status_color));
                         ui.add_space(4.0);
-                        ui.label(egui::RichText::new(format!("Mode: {:?}", self.ctx.config.read().routing.mode)).size(12.0).weak());
-                        ui.label(egui::RichText::new(format!("Frontend: {:?}", self.ctx.config.read().telegram.frontend)).size(12.0).weak());
+                        ui.label(egui::RichText::new(format!("Режим: {}", mode_label(self.ctx.config.read().routing.mode))).size(12.0).weak());
+                        ui.label(egui::RichText::new(format!("Прокси: {}", frontend_label(self.ctx.config.read().telegram.frontend))).size(12.0).weak());
                     });
 
                 ui.add_space(10.0);
-                ui.label(egui::RichText::new("A running listener does not guarantee that Telegram's upstream route is healthy.").size(11.0).weak());
+                ui.label(egui::RichText::new("Запущенный локальный порт не гарантирует, что соединение с серверами Telegram работает.").size(11.0).weak());
             });
     }
 
@@ -405,7 +405,7 @@ impl TeleRouteApp {
         let transport_text = if stats.current_transport != "—" {
             stats.current_transport.to_string()
         } else if telemetry.status == ConnectionStatus::Connected {
-            "Waiting for Telegram traffic".into()
+            "Ожидание трафика Telegram".into()
         } else {
             "—".into()
         };
@@ -415,44 +415,44 @@ impl TeleRouteApp {
 
         let (status_label, status_color, status_detail) = match telemetry.status {
             ConnectionStatus::Connected if has_live_session => (
-                "TELEGRAM SESSION ACTIVE",
+                "СЕАНС TELEGRAM АКТИВЕН",
                 egui::Color32::from_rgb(82, 205, 145),
-                "A client has completed the local proxy handshake.",
+                "Клиент успешно выполнил рукопожатие с локальным прокси.",
             ),
             ConnectionStatus::Connected => (
                 "LOCAL LISTENER READY",
                 egui::Color32::from_rgb(242, 189, 91),
-                "The local port is open, but no valid Telegram client session is attached. The saved proxy entry may not be selected or connected in Telegram.",
+                "Локальный порт открыт, но активного сеанса Telegram нет. Возможно, в Telegram не выбран сохранённый прокси или используется старая запись с другим секретом.",
             ),
             ConnectionStatus::Connecting => (
                 "STARTING",
                 egui::Color32::from_rgb(242, 189, 91),
-                "Starting the local Telegram frontend.",
+                "Запуск локального прокси Telegram.",
             ),
             ConnectionStatus::Stopping => (
                 "STOPPING",
                 egui::Color32::from_rgb(242, 189, 91),
-                "Closing local listeners and active sessions before allowing restart.",
+                "Закрытие локальных слушателей и сеансов перед повторным запуском.",
             ),
             ConnectionStatus::Error => (
                 "NEEDS ATTENTION",
                 egui::Color32::from_rgb(238, 103, 110),
-                "The frontend stopped or could not start. See the error details below.",
+                "Локальный прокси остановился или не смог запуститься. Подробности приведены ниже.",
             ),
             ConnectionStatus::Disconnected => (
                 "OFFLINE",
                 egui::Color32::from_rgb(155, 167, 184),
-                "Connect to start the local Telegram frontend.",
+                "Нажмите «Подключить», чтобы запустить локальный прокси Telegram.",
             ),
         };
 
         ui.horizontal_wrapped(|ui| {
             ui.vertical(|ui| {
-                ui.heading(egui::RichText::new("Overview").size(27.0).strong());
-                ui.label(egui::RichText::new("Connection health, transport and live traffic").weak());
+                ui.heading(egui::RichText::new("Обзор").size(27.0).strong());
+                ui.label(egui::RichText::new("Состояние соединения, транспорт и текущий трафик").weak());
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(egui::RichText::new(format!("MODE  {:?}", config.routing.mode)).strong().color(egui::Color32::from_rgb(118, 184, 255)));
+                ui.label(egui::RichText::new(format!("РЕЖИМ  {}", mode_label(config.routing.mode))).strong().color(egui::Color32::from_rgb(118, 184, 255)));
             });
         });
         ui.add_space(10.0);
@@ -464,14 +464,14 @@ impl TeleRouteApp {
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.vertical(|ui| {
-                        ui.label(egui::RichText::new("TELEGRAM ROUTER").size(11.0).strong().color(egui::Color32::from_rgb(129, 156, 188)));
+                        ui.label(egui::RichText::new("МАРШРУТИЗАТОР TELEGRAM").size(11.0).strong().color(egui::Color32::from_rgb(129, 156, 188)));
                         ui.add_space(3.0);
                         ui.label(egui::RichText::new(status_label).size(24.0).strong().color(status_color));
                         ui.add_space(3.0);
                         ui.label(status_detail);
                         ui.add_space(12.0);
                         ui.horizontal_wrapped(|ui| {
-                            ui.label(egui::RichText::new(format!("Frontend  {:?}", config.telegram.frontend)).strong());
+                            ui.label(egui::RichText::new(format!("Прокси  {}", frontend_label(config.telegram.frontend))).strong());
                             ui.separator();
                             ui.label(egui::RichText::new(format!("Transport  {transport_text}")).strong());
                             ui.separator();
@@ -481,10 +481,10 @@ impl TeleRouteApp {
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let (label, fill) = match telemetry.status {
-                            ConnectionStatus::Connected => ("Disconnect", egui::Color32::from_rgb(134, 53, 68)),
-                            ConnectionStatus::Connecting => ("Starting…", egui::Color32::from_rgb(72, 86, 105)),
-                            ConnectionStatus::Stopping => ("Stopping…", egui::Color32::from_rgb(72, 86, 105)),
-                            ConnectionStatus::Error | ConnectionStatus::Disconnected => ("Connect", egui::Color32::from_rgb(35, 126, 92)),
+                            ConnectionStatus::Connected => ("Отключить", egui::Color32::from_rgb(134, 53, 68)),
+                            ConnectionStatus::Connecting => ("Запуск…", egui::Color32::from_rgb(72, 86, 105)),
+                            ConnectionStatus::Stopping => ("Остановка…", egui::Color32::from_rgb(72, 86, 105)),
+                            ConnectionStatus::Error | ConnectionStatus::Disconnected => ("Подключить", egui::Color32::from_rgb(35, 126, 92)),
                         };
                         let button = egui::Button::new(egui::RichText::new(label).strong().size(16.0)).fill(fill);
                         if ui.add_sized([150.0, 48.0], button).clicked() {
@@ -499,19 +499,19 @@ impl TeleRouteApp {
             });
 
         ui.add_space(16.0);
-        ui.label(egui::RichText::new("LIVE METRICS").size(12.0).strong().color(egui::Color32::from_rgb(122, 145, 174)));
+        ui.label(egui::RichText::new("ТЕКУЩИЕ ПОКАЗАТЕЛИ").size(12.0).strong().color(egui::Color32::from_rgb(122, 145, 174)));
         ui.add_space(4.0);
 
         let values = [
-            ("WSS latency", stats.ping_ms.map(|value| format!("{value} ms")).unwrap_or_else(|| if telemetry.status == ConnectionStatus::Connected { "Checking…".into() } else { "—".into() })),
-            ("Calls / media", telemetry.calls.clone()),
-            ("TUN adapter", telemetry.tun.clone()),
-            ("UDP transport", telemetry.udp.clone()),
-            ("Telegram client", telemetry.telegram_client.clone()),
-            ("Active sessions", stats.active_connections.to_string()),
-            ("Upload", human_bytes(stats.bytes_up)),
-            ("Download", human_bytes(stats.bytes_down)),
-            ("MTProto endpoint", format!("{}:{}", config.telegram.mtproto_bind, config.telegram.mtproto_port)),
+            ("Задержка WSS", stats.ping_ms.map(|value| format!("{value} ms")).unwrap_or_else(|| if telemetry.status == ConnectionStatus::Connected { "Проверка…".into() } else { "—".into() })),
+            ("Звонки и медиа", localize_status(&telemetry.calls)),
+            ("Адаптер TUN", localize_status(&telemetry.tun)),
+            ("Транспорт UDP", localize_status(&telemetry.udp)),
+            ("Клиент Telegram", localize_status(&telemetry.telegram_client)),
+            ("Активные сеансы", stats.active_connections.to_string()),
+            ("Отправлено", human_bytes(stats.bytes_up)),
+            ("Получено", human_bytes(stats.bytes_down)),
+            ("Адрес MTProto", format!("{}:{}", config.telegram.mtproto_bind, config.telegram.mtproto_port)),
         ];
         let columns = ((ui.available_width() / 230.0).floor() as usize).clamp(1, 4);
         for row in values.chunks(columns) {
@@ -529,8 +529,8 @@ impl TeleRouteApp {
                 .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(119, 54, 66)))
                 .inner_margin(egui::Margin::same(13))
                 .show(ui, |ui| {
-                    ui.label(egui::RichText::new("Connection warning").strong().color(egui::Color32::from_rgb(238, 123, 130)));
-                    ui.label(&telemetry.error);
+                    ui.label(egui::RichText::new("Предупреждение о соединении").strong().color(egui::Color32::from_rgb(238, 123, 130)));
+                    ui.label(localize_error(&telemetry.error));
                 });
         }
 
@@ -540,25 +540,25 @@ impl TeleRouteApp {
             .inner_margin(egui::Margin::same(12))
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(egui::RichText::new("NEXT STEP").strong().color(egui::Color32::from_rgb(118, 184, 255)));
-                    ui.label("Open Diagnostics to test DNS, the standard WSS route and the media WSS route.");
-                    if ui.button("Open diagnostics").clicked() {
+                    ui.label(egui::RichText::new("СЛЕДУЮЩИЙ ШАГ").strong().color(egui::Color32::from_rgb(118, 184, 255)));
+                    ui.label("Откройте диагностику, чтобы проверить DNS, основной маршрут WSS и маршрут для медиа.");
+                    if ui.button("Открыть диагностику").clicked() {
                         self.page = Page::Diagnostics;
                     }
                 });
                 if telemetry.status == ConnectionStatus::Connected && active_sessions == 0 {
                     ui.add_space(8.0);
-                    ui.small("Telegram reconnection note: TeleRoute cannot read which proxy is selected inside Telegram. It does not repeatedly reopen tg://proxy links, because doing so can create duplicate entries. Open Telegram Settings → Connection and select the existing TeleRoute proxy.");
+                    ui.small("Важно: TeleRoute не может узнать, какой прокси выбран внутри Telegram. Чтобы не создавать дубликаты, приложение не открывает ссылку tg://proxy при каждом запуске. Откройте настройки соединения Telegram и выберите сохранённый прокси TeleRoute.");
                 }
                 ui.add_space(4.0);
-                ui.small("WSS latency is WebSocket setup time, not ICMP ping. Media WSS readiness verifies only that a media route accepted a handshake, not the full call or file-transfer path.");
+                ui.small("Задержка WSS — это время установления WebSocket-соединения, а не ICMP-пинг. Проверка Media WSS подтверждает только успешное рукопожатие, но не гарантирует загрузку файлов или работу звонков.");
             });
     }
     fn diagnostics_page(&mut self, ui: &mut egui::Ui) {
         page_heading(
             ui,
-            "Diagnostics",
-            "Test the local listener, Telegram WebSocket routes and media route independently.",
+            "Диагностика",
+            "Отдельно проверьте локальный прокси, маршруты WebSocket Telegram и маршрут медиа.",
         );
         ui.add_space(10.0);
 
@@ -571,7 +571,7 @@ impl TeleRouteApp {
                     if !self.diagnostics_running
                         && ui.add_sized(
                             [160.0, 40.0],
-                            egui::Button::new(egui::RichText::new("Run full test").strong())
+                            egui::Button::new(egui::RichText::new("Запустить полную проверку").strong())
                                 .fill(egui::Color32::from_rgb(34, 110, 186)),
                         ).clicked()
                     {
@@ -580,10 +580,10 @@ impl TeleRouteApp {
 
                     if self.diagnostics_running {
                         ui.add(egui::Spinner::new());
-                        ui.label("Checking DNS, WSS endpoints and media fallback…");
+                        ui.label("Проверка DNS, адресов WSS и резервного маршрута медиа…");
                         ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
                     } else {
-                        ui.label(egui::RichText::new("Tests run in the background; the UI stays responsive.").weak());
+                        ui.label(egui::RichText::new("Проверка выполняется в фоне; интерфейс продолжает работать.").weak());
                     }
                 });
             });
@@ -591,16 +591,16 @@ impl TeleRouteApp {
         ui.add_space(10.0);
         if let Some(report) = &self.diagnostics {
             let items = [
-                ("SOCKS5 listener", report.socks5.as_str()),
-                ("MTProto listener", report.mtproto.as_str()),
-                ("DNS resolution", report.dns.as_str()),
-                ("Direct Telegram TCP", report.telegram_tcp.as_str()),
-                ("WebSocket route", report.websocket.as_str()),
-                ("Media WebSocket", report.media_websocket.as_str()),
-                ("TCP fallback", report.tcp_fallback.as_str()),
-                ("UDP socket", report.udp.as_str()),
-                ("TUN adapter", report.tun.as_str()),
-                ("Call transport", report.call_transport.as_str()),
+                ("Слушатель SOCKS5", report.socks5.as_str()),
+                ("Слушатель MTProto", report.mtproto.as_str()),
+                ("Разрешение DNS", report.dns.as_str()),
+                ("Прямой TCP до Telegram", report.telegram_tcp.as_str()),
+                ("Маршрут WebSocket", report.websocket.as_str()),
+                ("WebSocket для медиа", report.media_websocket.as_str()),
+                ("Резервный TCP", report.tcp_fallback.as_str()),
+                ("Сокет UDP", report.udp.as_str()),
+                ("Адаптер TUN", report.tun.as_str()),
+                ("Транспорт звонков", report.call_transport.as_str()),
             ];
 
             let columns = ((ui.available_width() / 240.0).floor() as usize).clamp(1, 3);
@@ -614,7 +614,7 @@ impl TeleRouteApp {
                             .show(&mut cols[index], |ui| {
                                 ui.label(egui::RichText::new(*title).size(11.0).strong().color(egui::Color32::from_rgb(130, 151, 178)));
                                 ui.add_space(4.0);
-                                ui.label(egui::RichText::new(*value).strong().color(diagnostic_color(value)));
+                                ui.label(egui::RichText::new(localize_status(value)).strong().color(diagnostic_color(value)));
                             });
                     }
                 });
@@ -622,12 +622,12 @@ impl TeleRouteApp {
             }
 
             ui.add_space(4.0);
-            ui.small("A successful WSS handshake confirms route availability, but does not prove that a full photo download or voice/video call works end-to-end.");
+            ui.small("Успешное рукопожатие WSS подтверждает доступность маршрута, но не доказывает, что фотография полностью загрузится или голосовой/видеозвонок будет работать.");
         } else {
             empty_state(
                 ui,
-                "No diagnostic run yet",
-                "Run the test to see which route is reachable and which part is failing.",
+                "Проверка ещё не запускалась",
+                "Запустите проверку, чтобы узнать, какие маршруты доступны и где возникает ошибка.",
             );
         }
     }
@@ -635,26 +635,26 @@ impl TeleRouteApp {
     fn statistics_page(&mut self, ui: &mut egui::Ui) {
         page_heading(
             ui,
-            "Statistics",
-            "Live traffic counters and connection quality. Values update as traffic passes.",
+            "Статистика",
+            "Счётчики трафика и качество соединения. Значения обновляются по мере передачи данных.",
         );
         ui.add_space(10.0);
         let stats = self.ctx.snapshot();
         let values = [
-            ("WSS route latency", stats.ping_ms.map(|v| format!("{v} ms")).unwrap_or_else(|| "—".into())),
-            ("Total connections", stats.connections.to_string()),
-            ("Active connections", stats.active_connections.to_string()),
-            ("Upload", human_bytes(stats.bytes_up)),
-            ("Download", human_bytes(stats.bytes_down)),
-            ("Packets sent", stats.packets_up.to_string()),
-            ("Packets received", stats.packets_down.to_string()),
-            ("WSS success rate", format!("{:.1}%", stats.ws_success_rate)),
-            ("TCP fallbacks", stats.tcp_fallbacks.to_string()),
-            ("UDP sessions", stats.udp_sessions.to_string()),
-            ("UDP blocked", stats.udp_blocked.to_string()),
-            ("Call upload", human_bytes(stats.call_bytes_up)),
-            ("Call download", human_bytes(stats.call_bytes_down)),
-            ("Call jitter", stats.call_jitter_ms.map(|v| format!("{v} ms")).unwrap_or_else(|| "—".into())),
+            ("Задержка маршрута WSS", stats.ping_ms.map(|v| format!("{v} ms")).unwrap_or_else(|| "—".into())),
+            ("Всего соединений", stats.connections.to_string()),
+            ("Активные соединения", stats.active_connections.to_string()),
+            ("Отправлено", human_bytes(stats.bytes_up)),
+            ("Получено", human_bytes(stats.bytes_down)),
+            ("Отправлено пакетов", stats.packets_up.to_string()),
+            ("Получено пакетов", stats.packets_down.to_string()),
+            ("Успешные подключения WSS", format!("{:.1}%", stats.ws_success_rate)),
+            ("Переходы на резервный TCP", stats.tcp_fallbacks.to_string()),
+            ("Сеансы UDP", stats.udp_sessions.to_string()),
+            ("Заблокировано UDP", stats.udp_blocked.to_string()),
+            ("Отправлено в звонках", human_bytes(stats.call_bytes_up)),
+            ("Получено в звонках", human_bytes(stats.call_bytes_down)),
+            ("Джиттер звонков", stats.call_jitter_ms.map(|v| format!("{v} ms")).unwrap_or_else(|| "—".into())),
         ];
         let columns = ((ui.available_width() / 230.0).floor() as usize).clamp(1, 4);
         for row in values.chunks(columns) {
@@ -671,16 +671,16 @@ impl TeleRouteApp {
             .fill(egui::Color32::from_rgb(16, 23, 34))
             .inner_margin(egui::Margin::same(12))
             .show(ui, |ui| {
-                ui.label(egui::RichText::new("About latency").strong().color(egui::Color32::from_rgb(118, 184, 255)));
-                ui.label("The latency value is the time needed to establish a WebSocket route. It is not an ICMP ping or an end-to-end Telegram request time.");
+                ui.label(egui::RichText::new("О задержке").strong().color(egui::Color32::from_rgb(118, 184, 255)));
+                ui.label("Задержка показывает время установления маршрута WebSocket. Это не ICMP-пинг и не полное время ответа Telegram.");
             });
     }
 
     fn logs_page(&mut self, ui: &mut egui::Ui) {
         page_heading(
             ui,
-            "Logs",
-            "Recent application events and route failures. Secrets and message contents are not shown intentionally.",
+            "Журнал",
+            "Последние события приложения и ошибки маршрутов. Секреты и содержимое сообщений не отображаются.",
         );
         ui.add_space(10.0);
 
@@ -690,19 +690,19 @@ impl TeleRouteApp {
             .inner_margin(egui::Margin::same(12))
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    if ui.button("Refresh").clicked() {
+                    if ui.button("Обновить").clicked() {
                         self.refresh_logs();
                     }
-                    if ui.button("Clear view").clicked() {
+                    if ui.button("Очистить экран").clicked() {
                         self.logs_cache.clear();
                     }
-                    if ui.button("Open log folder").clicked() {
+                    if ui.button("Открыть папку журналов").clicked() {
                         let _ = std::process::Command::new("explorer")
                             .arg(crate::config::AppConfig::logs_dir())
                             .spawn();
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(egui::RichText::new(format!("{} lines", self.logs_cache.lines().count())).weak());
+                        ui.label(egui::RichText::new(format!("{} строк", self.logs_cache.lines().count())).weak());
                     });
                 });
             });
@@ -714,7 +714,7 @@ impl TeleRouteApp {
             .inner_margin(egui::Margin::same(10))
             .show(ui, |ui| {
                 if self.logs_cache.is_empty() {
-                    empty_state(ui, "No log lines loaded", "Press Refresh to read the latest log file.");
+                    empty_state(ui, "Нет загруженных записей", "Нажмите «Обновить», чтобы прочитать последний журнал.");
                 } else {
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
@@ -738,37 +738,37 @@ impl TeleRouteApp {
     fn settings_page(&mut self, ui: &mut egui::Ui) {
         page_heading(
             ui,
-            "Settings",
-            "Configure Telegram integration, transport fallbacks and Windows behavior.",
+            "Настройки",
+            "Настройте интеграцию с Telegram, резервные транспорты и поведение приложения в Windows.",
         );
         let mut cfg = self.ctx.config.write();
         let mut save_requested = false;
-        ui.collapsing("General", |ui| {
-            ui.checkbox(&mut cfg.autostart.start_with_windows,"Start with Windows");
-            ui.checkbox(&mut cfg.autostart.start_connected,"Start connected");
-            ui.checkbox(&mut cfg.autostart.start_minimized,"Start minimized");
-            ui.checkbox(&mut cfg.autostart.minimize_to_tray,"Minimize to tray");
+        ui.collapsing("Общие", |ui| {
+            ui.checkbox(&mut cfg.autostart.start_with_windows,"Запускать вместе с Windows");
+            ui.checkbox(&mut cfg.autostart.start_connected,"Подключаться при запуске");
+            ui.checkbox(&mut cfg.autostart.start_minimized,"Запускать свёрнутым");
+            ui.checkbox(&mut cfg.autostart.minimize_to_tray,"Сворачивать в область уведомлений");
             ui.separator();
-            ui.checkbox(&mut cfg.telegram.auto_configure,"Automatically add proxy to Telegram once");
+            ui.checkbox(&mut cfg.telegram.auto_configure,"Добавить прокси в Telegram автоматически");
             ui.label(format!(
-                "SOCKS5 registration: {}",
-                cfg.telegram.configured_proxy.as_deref().and_then(|value| value.strip_prefix("v3:")).unwrap_or("not registered")
+                "Регистрация SOCKS5: {}",
+                cfg.telegram.configured_proxy.as_deref().and_then(|value| value.strip_prefix("v3:")).unwrap_or("не зарегистрирован")
             ));
-            if ui.button("Mark current SOCKS5 as already configured").clicked() {
+            if ui.button("Отметить текущий SOCKS5 как настроенный").clicked() {
                 let host = match cfg.proxy.bind.as_str() {
                     "0.0.0.0" | "::" | "[::]" => "127.0.0.1",
                     other => other,
                 };
                 cfg.telegram.configured_proxy = Some(format!("v3:{}:{}", host, cfg.proxy.port));
             }
-            if ui.button("Forget SOCKS5 Telegram registration").clicked() {
+            if ui.button("Сбросить регистрацию SOCKS5 в Telegram").clicked() {
                 cfg.telegram.configured_proxy = None;
             }
             ui.label(format!(
-                "MTProto registration: {}",
-                if cfg.telegram.configured_mtproto.is_some() { "registered" } else { "not registered" }
+                "Регистрация MTProto: {}",
+                if cfg.telegram.configured_mtproto.is_some() { "зарегистрирован" } else { "не зарегистрирован" }
             ));
-            if ui.button("Mark current MTProto as already configured").clicked() {
+            if ui.button("Отметить текущий MTProto как настроенный").clicked() {
                 cfg.telegram.configured_mtproto = Some(format!(
                     "v4:{}:{}:{}",
                     cfg.mtproto.server.trim(),
@@ -776,17 +776,17 @@ impl TeleRouteApp {
                     cfg.mtproto.secret.trim()
                 ));
             }
-            if ui.button("Forget MTProto Telegram registration").clicked() {
+            if ui.button("Сбросить регистрацию MTProto в Telegram").clicked() {
                 cfg.telegram.configured_mtproto = None;
             }
         });
         ui.collapsing("Telegram", |ui| {
-            ui.label("Telegram-native frontend used by the WebSocket bridge:");
+            ui.label("Локальный прокси Telegram, используемый мостом WebSocket:");
 
             ui.radio_value(
                 &mut cfg.telegram.frontend,
                 TelegramFrontend::MtprotoWs,
-                "MTProto WebSocket (recommended)",
+                "MTProto через WebSocket (рекомендуется)",
             );
             ui.radio_value(
                 &mut cfg.telegram.frontend,
@@ -796,19 +796,19 @@ impl TeleRouteApp {
 
             ui.checkbox(
                 &mut cfg.telegram.auto_configure,
-                "Automatically configure Telegram once",
+                "Настроить Telegram автоматически",
             );
 
             match cfg.telegram.frontend {
                 TelegramFrontend::MtprotoWs => {
-                    ui.label("Uses a regular 32-character hexadecimal secret; Fake-TLS (dd-prefixed) links are not supported by this listener.");
-                    ui.small("Telegram may keep saved proxy entries after TeleRoute stops. A local entry cannot carry traffic once the local listener is stopped; an external MTProto proxy must be disabled inside Telegram.");
+                    ui.label("Используется шестнадцатеричный секрет длиной 32 символа. Поддержка старых ссылок Telegram с префиксом dd включена.");
+                    ui.small("Telegram может сохранять запись прокси после остановки TeleRoute. Локальный прокси не передаёт трафик после остановки слушателя. Внешний MTProto-прокси нужно отключить непосредственно в Telegram.");
                     ui.horizontal(|ui| {
-                        ui.label("Local port");
+                        ui.label("Локальный порт");
                         ui.add(egui::Slider::new(&mut cfg.telegram.mtproto_port, 1..=65535));
                     });
                     ui.horizontal(|ui| {
-                        ui.label("Secret");
+                        ui.label("Секрет");
                         let response = ui.add_sized(
                             [ui.available_width().min(420.0), 28.0],
                             egui::TextEdit::singleline(&mut cfg.telegram.mtproto_secret),
@@ -818,12 +818,12 @@ impl TeleRouteApp {
                         }
                     });
                     ui.horizontal(|ui| {
-                        if ui.button("Randomize secret").clicked() {
+                        if ui.button("Сгенерировать секрет").clicked() {
                             cfg.telegram.mtproto_secret = generate_random_secret();
                             cfg.telegram.configured_mtproto = None;
                         }
 
-                        if ui.button("Randomize + configure Telegram").clicked() {
+                        if ui.button("Сгенерировать секрет и настроить Telegram").clicked() {
                             cfg.telegram.mtproto_secret = generate_random_secret();
                             cfg.telegram.configured_mtproto = None;
 
@@ -848,12 +848,12 @@ impl TeleRouteApp {
                     });
 
                     if let Some(proxy) = &cfg.telegram.configured_mtproto {
-                        ui.label(format!("Already configured: {proxy}"));
+                        ui.label(format!("Уже настроено: {proxy}"));
                     } else {
-                        ui.label("Telegram MTProto proxy is not registered yet.");
+                        ui.label("Прокси MTProto ещё не добавлен в Telegram.");
                     }
 
-                    if ui.button("Configure Telegram now").clicked() {
+                    if ui.button("Настроить Telegram сейчас").clicked() {
                         #[cfg(windows)]
                         {
                             let host = cfg.telegram.mtproto_bind.clone();
@@ -873,7 +873,7 @@ impl TeleRouteApp {
                         }
                     }
 
-                    if ui.button("Forget Telegram MTProto registration").clicked() {
+                    if ui.button("Сбросить регистрацию MTProto в Telegram").clicked() {
                         cfg.telegram.configured_mtproto = None;
                     }
                 }
@@ -884,16 +884,16 @@ impl TeleRouteApp {
                         other => other,
                     };
 
-                    ui.label("Generic local SOCKS5 frontend. Telegram media/calls are not guaranteed through SOCKS5.");
-                    ui.label(format!("SOCKS5 endpoint: {host}:{}", cfg.proxy.port));
+                    ui.label("Обычный локальный прокси SOCKS5. Работа медиа и звонков Telegram через SOCKS5 не гарантируется.");
+                    ui.label(format!("Адрес SOCKS5: {host}:{}", cfg.proxy.port));
 
                     if let Some(proxy) = &cfg.telegram.configured_proxy {
-                        ui.label(format!("Already configured: {proxy}"));
+                        ui.label(format!("Уже настроено: {proxy}"));
                     } else {
-                        ui.label("Telegram SOCKS5 is not registered yet.");
+                        ui.label("Прокси SOCKS5 ещё не добавлен в Telegram.");
                     }
 
-                    if ui.button("Configure Telegram now").clicked() {
+                    if ui.button("Настроить Telegram сейчас").clicked() {
                         #[cfg(windows)]
                         {
                             if crate::platform::windows::open_telegram_socks_proxy(host, cfg.proxy.port).is_ok() {
@@ -902,38 +902,38 @@ impl TeleRouteApp {
                         }
                     }
 
-                    if ui.button("Forget Telegram SOCKS5 registration").clicked() {
+                    if ui.button("Сбросить регистрацию SOCKS5 в Telegram").clicked() {
                         cfg.telegram.configured_proxy = None;
                     }
                 }
             }
         });
-        ui.collapsing("Proxy", |ui| { ui.horizontal(|ui| { ui.label("Host"); ui.add_sized([ui.available_width().min(360.0), 28.0], egui::TextEdit::singleline(&mut cfg.proxy.bind)); }); ui.add(egui::Slider::new(&mut cfg.proxy.port, 1..=65535).text("Port")); });
+        ui.collapsing("Прокси", |ui| { ui.horizontal(|ui| { ui.label("Адрес"); ui.add_sized([ui.available_width().min(360.0), 28.0], egui::TextEdit::singleline(&mut cfg.proxy.bind)); }); ui.add(egui::Slider::new(&mut cfg.proxy.port, 1..=65535).text("Порт")); });
         ui.collapsing("MTProto", |ui| {
-            ui.label("MTProto mode does not provide Telegram Calls.");
+            ui.label("Режим MTProto не поддерживает звонки Telegram.");
             ui.horizontal(|ui| {
-                ui.label("Server");
+                ui.label("Сервер");
                 ui.add_sized([ui.available_width().min(360.0), 28.0], egui::TextEdit::singleline(&mut cfg.mtproto.server));
             });
-            ui.add(egui::Slider::new(&mut cfg.mtproto.port, 1..=65535).text("Port"));
+            ui.add(egui::Slider::new(&mut cfg.mtproto.port, 1..=65535).text("Порт"));
             ui.horizontal(|ui| {
-                ui.label("Secret");
+                ui.label("Секрет");
                 ui.add_sized([ui.available_width().min(360.0), 28.0], egui::TextEdit::singleline(&mut cfg.mtproto.secret));
             });
-            ui.label("Example secret: 32 hexadecimal characters.");
+            ui.label("Пример секрета: 32 шестнадцатеричных символа.");
         });
         ui.collapsing("WebSocket", |ui| {
-            ui.add(egui::Slider::new(&mut cfg.timeouts.connect_ms, 500..=15000).text("Configured connect timeout ms"));
-            ui.add(egui::Slider::new(&mut cfg.timeouts.reconnect_ms, 100..=10000).text("Reconnect delay ms"));
-            ui.label("Initial WSS route attempts use a short cap, then quickly fall back instead of waiting through every domain.");
-            ui.label("Endpoint templates are configured in config.toml.");
+            ui.add(egui::Slider::new(&mut cfg.timeouts.connect_ms, 500..=15000).text("Тайм-аут подключения (мс)"));
+            ui.add(egui::Slider::new(&mut cfg.timeouts.reconnect_ms, 100..=10000).text("Задержка переподключения (мс)"));
+            ui.label("Первые попытки WSS ограничены коротким тайм-аутом; затем приложение быстро переходит к резервным адресам.");
+            ui.label("Шаблоны адресов задаются в config.toml.");
         });
-        ui.collapsing("Routing", |ui| { for mode in [Mode::Proxy,Mode::Calls,Mode::Full,Mode::Mtproto] { ui.radio_value(&mut cfg.routing.mode, mode, format!("{mode:?}")); } ui.checkbox(&mut cfg.routing.telegram_only,"Telegram-only UDP routing"); ui.checkbox(&mut cfg.routing.direct_udp_fallback,"Direct UDP fallback"); ui.checkbox(&mut cfg.routing.relay_udp_fallback,"QUIC relay fallback"); ui.checkbox(&mut cfg.routing.route_all_traffic,"Route all traffic (requires a future full TCP userspace stack; disabled now)"); });
-        ui.collapsing("TUN", |ui| { ui.checkbox(&mut cfg.tun.enabled,"Enable TUN"); ui.add(egui::Slider::new(&mut cfg.tun.mtu, 576..=1500).text("MTU")); ui.add_sized([ui.available_width().min(360.0), 28.0], egui::TextEdit::singleline(&mut cfg.tun.adapter_name)); ui.label(format!("Telegram UDP CIDRs: {}",cfg.tun.telegram_udp_cidrs.join(", "))); });
-        ui.collapsing("Logging", |ui| { ui.add_sized([ui.available_width().min(360.0), 28.0], egui::TextEdit::singleline(&mut cfg.logging.level)); ui.add(egui::Slider::new(&mut cfg.logging.keep_files,1..=20).text("Retained files")); });
+        ui.collapsing("Маршрутизация", |ui| { for mode in [Mode::Proxy,Mode::Calls,Mode::Full,Mode::Mtproto] { ui.radio_value(&mut cfg.routing.mode, mode, mode_label(mode).to_owned()); } ui.checkbox(&mut cfg.routing.telegram_only,"Маршрутизировать UDP только для Telegram"); ui.checkbox(&mut cfg.routing.direct_udp_fallback,"Резервный прямой UDP"); ui.checkbox(&mut cfg.routing.relay_udp_fallback,"Резервный ретранслятор QUIC"); ui.checkbox(&mut cfg.routing.route_all_traffic,"Маршрутизировать весь трафик (требуется полноценная обработка TCP; пока недоступно)"); });
+        ui.collapsing("TUN", |ui| { ui.checkbox(&mut cfg.tun.enabled,"Включить TUN"); ui.add(egui::Slider::new(&mut cfg.tun.mtu, 576..=1500).text("MTU")); ui.add_sized([ui.available_width().min(360.0), 28.0], egui::TextEdit::singleline(&mut cfg.tun.adapter_name)); ui.label(format!("Подсети UDP Telegram: {}",cfg.tun.telegram_udp_cidrs.join(", "))); });
+        ui.collapsing("Журналы", |ui| { ui.add_sized([ui.available_width().min(360.0), 28.0], egui::TextEdit::singleline(&mut cfg.logging.level)); ui.add(egui::Slider::new(&mut cfg.logging.keep_files,1..=20).text("Хранить файлов")); });
         if ui.add_sized(
             [ui.available_width().min(220.0), 40.0],
-            egui::Button::new(egui::RichText::new("Save settings").strong())
+            egui::Button::new(egui::RichText::new("Сохранить настройки").strong())
                 .fill(egui::Color32::from_rgb(34, 110, 186)),
         ).clicked() {
             save_requested = true;
@@ -942,15 +942,15 @@ impl TeleRouteApp {
 
         if save_requested {
             match self.ctx.save_config() {
-                Ok(()) => self.settings_notice = "Settings saved successfully.".into(),
-                Err(error) => self.settings_notice = format!("Could not save settings: {error}"),
+                Ok(()) => self.settings_notice = "Настройки успешно сохранены.".into(),
+                Err(error) => self.settings_notice = format!("Не удалось сохранить настройки: {error}"),
             }
         }
 
         if !self.settings_notice.is_empty() {
             ui.add_space(7.0);
             ui.label(egui::RichText::new(&self.settings_notice).color(
-                if self.settings_notice.starts_with("Settings saved") {
+                if self.settings_notice.starts_with("Настройки успешно сохранены") {
                     egui::Color32::from_rgb(82, 205, 145)
                 } else {
                     egui::Color32::from_rgb(238, 103, 110)
@@ -964,6 +964,89 @@ fn generate_random_secret() -> String {
     let mut bytes = [0u8; 16];
     rng().fill_bytes(&mut bytes);
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn mode_label(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Proxy => "Прокси",
+        Mode::Calls => "Звонки",
+        Mode::Full => "Полный режим",
+        Mode::Mtproto => "Внешний MTProto",
+    }
+}
+
+fn frontend_label(frontend: TelegramFrontend) -> &'static str {
+    match frontend {
+        TelegramFrontend::MtprotoWs => "MTProto через WebSocket",
+        TelegramFrontend::Socks5 => "SOCKS5",
+    }
+}
+
+fn localize_status(value: &str) -> String {
+    if let Some(rest) = value.strip_prefix("CONNECTED · ") {
+        return format!("ПОДКЛЮЧЕНО · {}", rest.replace(" active session(s)", " активных сеансов"));
+    }
+    let mapped = match value {
+        "RUNNING" => "ВЫПОЛНЯЕТСЯ",
+        "DIAGNOSTIC TASK FAILED" => "СБОЙ ПРОВЕРКИ",
+        "OK" => "РАБОТАЕТ",
+        "ready" | "READY" => "ГОТОВ",
+        "active" | "ACTIVE" => "АКТИВЕН",
+        "failed" | "FAILED" => "ОШИБКА",
+        "blocked" | "BLOCKED" => "ЗАБЛОКИРОВАН",
+        "available" | "AVAILABLE" => "ДОСТУПЕН",
+        "unavailable" | "UNAVAILABLE" => "НЕДОСТУПЕН",
+        "stopped" | "STOPPED" => "ОСТАНОВЛЕН",
+        "inactive" | "INACTIVE" => "НЕАКТИВЕН",
+        "unknown" | "UNKNOWN" => "НЕИЗВЕСТНО",
+        "not running" => "НЕ ЗАПУЩЕН",
+        "NOT REQUIRED" => "НЕ ТРЕБУЕТСЯ",
+        "NOT READY" => "НЕ ГОТОВ",
+        "NOT LISTENING" => "НЕ СЛУШАЕТ",
+        "STOPPED (disconnected)" => "ОСТАНОВЛЕН (отключено)",
+        "NOT RUNNING (disconnected)" => "НЕ ЗАПУЩЕН (отключено)",
+        "LISTENER READY" => "ПРОКСИ ГОТОВ",
+        "CONNECTING" => "ПОДКЛЮЧЕНИЕ",
+        "STOPPING" => "ОСТАНОВКА",
+        "ERROR" => "ОШИБКА",
+        "DISCONNECTED" => "ОТКЛЮЧЕНО",
+        "WAITING FOR TELEGRAM CLIENT" => "ОЖИДАНИЕ КЛИЕНТА TELEGRAM",
+        "NO VALID TELEGRAM SESSION" => "НЕТ АКТИВНОГО СЕАНСА TELEGRAM",
+        "EXTERNAL MTProto HANDOFF" => "ПЕРЕДАЧА ВНЕШНЕМУ MTProto",
+        "EXTERNAL PROXY MANAGED BY TELEGRAM" => "ВНЕШНИЙ ПРОКСИ УПРАВЛЯЕТСЯ TELEGRAM",
+        "LISTENER STOPPED" => "ПРОКСИ ОСТАНОВЛЕН",
+        "LISTENER FAILED TO START" => "НЕ УДАЛОСЬ ЗАПУСТИТЬ ПРОКСИ",
+        "STOPPING LOCAL LISTENER" => "ОСТАНОВКА ЛОКАЛЬНОГО ПРОКСИ",
+        "DISCONNECTED · LOCAL LISTENER STOPPED" => "ОТКЛЮЧЕНО · ЛОКАЛЬНЫЙ ПРОКСИ ОСТАНОВЛЕН",
+        "DISCONNECTED · STARTUP CANCELLED" => "ОТКЛЮЧЕНО · ЗАПУСК ОТМЕНЁН",
+        "LISTENER FORCED TO STOP" => "ПРОКСИ ПРИНУДИТЕЛЬНО ОСТАНОВЛЕН",
+        "CLIENT SESSIONS STILL CLOSING" => "ЗАКРЫТИЕ СЕАНСОВ КЛИЕНТОВ",
+        "MEDIA WSS CHECKING" => "ПРОВЕРКА MEDIA WSS",
+        "MEDIA WSS FAILED" => "MEDIA WSS НЕДОСТУПЕН",
+        "MEDIA WSS READY · CALL NOT END-TO-END TESTED" => "MEDIA WSS ДОСТУПЕН · ЗВОНКИ ЦЕЛИКОМ НЕ ПРОВЕРЕНЫ",
+        "TUN ACTIVE; CALL NOT VERIFIED" => "TUN АКТИВЕН; ЗВОНКИ НЕ ПРОВЕРЕНЫ",
+        _ => return value.to_owned(),
+    };
+    mapped.to_owned()
+}
+
+fn localize_error(value: &str) -> String {
+    match value {
+        "External MTProto requires server, port and secret" =>
+            return "Для внешнего MTProto укажите сервер, порт и секрет.".to_owned(),
+        "This mode hands an external MTProto server to Telegram. TeleRoute cannot switch off that remote service; disable the selected proxy in Telegram's Connection settings." =>
+            return "Этот режим передаёт Telegram адрес внешнего MTProto-прокси. TeleRoute не может отключить удалённый сервер — выключите выбранный прокси в настройках соединения Telegram.".to_owned(),
+        "The local listener did not shut down cleanly; its task was stopped forcibly." =>
+            return "Локальный прокси не завершился штатно; его задача была остановлена принудительно.".to_owned(),
+        _ => {}
+    }
+    if let Some(rest) = value.strip_prefix("Telegram frontend failed: ") {
+        return format!("Не удалось запустить локальный прокси Telegram: {rest}");
+    }
+    if let Some(rest) = value.strip_prefix("Optional TUN initialization failed: ") {
+        return format!("Не удалось запустить дополнительный адаптер TUN: {rest}");
+    }
+    value.to_owned()
 }
 
 fn page_heading(ui: &mut egui::Ui, title: &str, subtitle: &str) {
@@ -1010,18 +1093,18 @@ fn responsive_card(ui: &mut egui::Ui, title: &str, value: &str) {
             ui.set_min_size([width, 78.0].into());
             ui.label(egui::RichText::new(title).size(11.0).strong().color(egui::Color32::from_rgb(130, 151, 178)));
             ui.add_space(4.0);
-            ui.label(egui::RichText::new(value).strong().size(15.0));
+            ui.label(egui::RichText::new(localize_status(value)).strong().size(15.0));
         });
 }
 fn human_bytes(n: u64) -> String { const U:[&str;4]=["B","KB","MB","GB"]; let mut v=n as f64; let mut i=0; while v>=1024.0 && i<3 {v/=1024.0;i+=1;} format!("{v:.1} {}",U[i]) }
 fn build_tray(ctx: AppContext, egui_ctx: egui::Context) -> anyhow::Result<TrayState> {
     let menu = Menu::new();
-    let connect = MenuItem::new("Connect", true, None);
-    let disconnect = MenuItem::new("Disconnect", true, None);
-    let open = MenuItem::new("Open", true, None);
-    let configure_telegram = MenuItem::new("Configure Telegram", true, None);
-    let test = MenuItem::new("Test", true, None);
-    let exit = MenuItem::new("Exit", true, None);
+    let connect = MenuItem::new("Подключить", true, None);
+    let disconnect = MenuItem::new("Отключить", true, None);
+    let open = MenuItem::new("Открыть", true, None);
+    let configure_telegram = MenuItem::new("Настроить Telegram", true, None);
+    let test = MenuItem::new("Проверить", true, None);
+    let exit = MenuItem::new("Выход", true, None);
     menu.append_items(&[&connect, &disconnect, &open, &configure_telegram, &test, &exit])?;
 
     let (tx, rx) = std::sync::mpsc::channel::<TrayAction>();
